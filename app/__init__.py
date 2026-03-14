@@ -1,0 +1,1 @@
+"""ECG viewer application package."""
