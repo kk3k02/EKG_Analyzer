@@ -5,7 +5,20 @@ from typing import Any
 
 import numpy as np
 from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, Signal
-from PySide6.QtWidgets import QFileDialog, QHBoxLayout, QLabel, QMainWindow, QMessageBox, QSplitter, QStatusBar, QVBoxLayout, QWidget
+from PySide6.QtGui import QGuiApplication
+from PySide6.QtWidgets import (
+    QFileDialog,
+    QHBoxLayout,
+    QLabel,
+    QMainWindow,
+    QMessageBox,
+    QScrollArea,
+    QSizePolicy,
+    QSplitter,
+    QStatusBar,
+    QVBoxLayout,
+    QWidget,
+)
 
 from app.gui.controls_panel import ControlsPanel
 from app.gui.dialogs import SamplingRateDialog
@@ -49,7 +62,6 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("EKG Viewer - Etap 1")
-        self.resize(1600, 900)
 
         self.thread_pool = QThreadPool.globalInstance()
         self.current_record: ECGRecord | None = None
@@ -58,23 +70,41 @@ class MainWindow(QMainWindow):
         central_widget = QWidget(self)
         self.setCentralWidget(central_widget)
         central_layout = QHBoxLayout(central_widget)
+        central_layout.setContentsMargins(6, 6, 6, 6)
+        central_layout.setSpacing(6)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter.setChildrenCollapsible(False)
+        splitter.setHandleWidth(8)
         central_layout.addWidget(splitter)
 
         left_panel = QWidget(self)
         left_layout = QVBoxLayout(left_panel)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(8)
 
         self.controls = ControlsPanel(self)
         self.metadata_panel = MetadataPanel(self)
         left_layout.addWidget(self.controls)
         left_layout.addWidget(self.metadata_panel)
         left_layout.addStretch(1)
+        left_panel.setMinimumWidth(280)
+        left_panel.setMaximumWidth(420)
+        left_panel.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
+
+        left_scroll = QScrollArea(self)
+        left_scroll.setWidgetResizable(True)
+        left_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        left_scroll.setWidget(left_panel)
 
         self.plot_widget = ECGPlotWidget(self)
-        splitter.addWidget(left_panel)
+        self.plot_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+
+        splitter.addWidget(left_scroll)
         splitter.addWidget(self.plot_widget)
-        splitter.setSizes([350, 1200])
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
 
         self.status_bar = QStatusBar(self)
         self.setStatusBar(self.status_bar)
@@ -84,6 +114,26 @@ class MainWindow(QMainWindow):
         self.status_bar.addPermanentWidget(self.selection_label, stretch=2)
 
         self._connect_signals()
+        self._apply_screen_adaptive_geometry(splitter)
+
+    def _apply_screen_adaptive_geometry(self, splitter: QSplitter) -> None:
+        screen = self.screen() or QGuiApplication.primaryScreen()
+        if screen is None:
+            self.resize(1400, 900)
+            splitter.setSizes([320, 1080])
+            return
+
+        available = screen.availableGeometry()
+        width = max(1200, min(int(available.width() * 0.88), 2200))
+        height = max(760, min(int(available.height() * 0.88), 1400))
+        self.resize(width, height)
+
+        left_width = max(280, min(int(width * 0.24), 420))
+        splitter.setSizes([left_width, max(width - left_width, 800)])
+        self.move(
+            available.x() + max((available.width() - width) // 2, 0),
+            available.y() + max((available.height() - height) // 2, 0),
+        )
 
     def _connect_signals(self) -> None:
         self.controls.load_requested.connect(self._choose_file)

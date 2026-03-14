@@ -5,7 +5,7 @@ from dataclasses import dataclass
 import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import QObject, Qt, Signal
-from PySide6.QtWidgets import QVBoxLayout, QWidget
+from PySide6.QtWidgets import QSizePolicy, QVBoxLayout, QWidget
 
 from app.models.ecg_record import ECGRecord
 from app.services.selection_stats import SelectionStats, compute_selection_stats
@@ -26,17 +26,23 @@ class ECGPlotWidget(QWidget):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
         pg.setConfigOptions(antialias=False)
 
         self.main_plot = pg.PlotWidget()
+        self.main_plot.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.main_plot.setBackground("w")
         self.main_plot.showGrid(x=True, y=True, alpha=0.25)
         self.main_plot.setLabel("bottom", "Time", units="s")
         self.main_plot.setLabel("left", "Amplitude")
         self.main_plot.addLegend(offset=(10, 10))
 
-        self.overview_plot = pg.PlotWidget(maximumHeight=120)
+        self.overview_plot = pg.PlotWidget()
+        self.overview_plot.setMinimumHeight(90)
+        self.overview_plot.setMaximumHeight(140)
         self.overview_plot.setBackground("w")
         self.overview_plot.setMouseEnabled(x=False, y=False)
         self.overview_plot.hideAxis("left")

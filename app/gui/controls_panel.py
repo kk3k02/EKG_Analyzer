@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QPushButton,
     QRadioButton,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -22,7 +23,7 @@ class ControlsPanel(QWidget):
     load_requested = Signal()
     view_mode_changed = Signal(str)
     active_lead_changed = Signal(int)
-    lead_visibility_changed = Signal(dict)
+    lead_visibility_changed = Signal(object)
     window_preset_selected = Signal(object)
     reset_view_requested = Signal()
     grid_toggled = Signal(bool)
@@ -35,6 +36,9 @@ class ControlsPanel(QWidget):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(10)
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
 
         self.load_button = QPushButton("Wczytaj plik")
         self.load_button.clicked.connect(self.load_requested.emit)
@@ -52,6 +56,7 @@ class ControlsPanel(QWidget):
         leads_group = QGroupBox("Odprowadzenia")
         leads_layout = QVBoxLayout(leads_group)
         self.leads_list = QListWidget(self)
+        self.leads_list.setMinimumHeight(180)
         self.leads_list.itemChanged.connect(self._emit_visibility)
         leads_layout.addWidget(self.leads_list)
         layout.addWidget(leads_group)
