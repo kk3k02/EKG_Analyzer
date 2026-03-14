@@ -20,6 +20,14 @@ class CursorInfo:
 
 
 class ECGPlotWidget(QWidget):
+    """Interactive Stage 1 ECG viewer built around pyqtgraph.
+
+    Selection statistics emitted from this widget refer only to the active lead
+    in single-lead mode or to the lead nearest the interaction point in stacked
+    mode. The widget does not provide clinical annotations or multi-lead
+    diagnostic measurements yet.
+    """
+
     cursor_changed = Signal(object)
     selection_changed = Signal(object)
 
@@ -268,6 +276,7 @@ class ECGPlotWidget(QWidget):
         mask = (self._record.time_axis >= start) & (self._record.time_axis <= end)
         if not np.any(mask):
             return
+        # Stage 1 keeps selection stats intentionally simple: one lead only.
         lead_index = self._active_lead if self._view_mode == "single" else self._nearest_visible_lead(0.0)
         stats = compute_selection_stats(self._record.time_axis[mask], self._record.signal[mask, lead_index])
         self.selection_changed.emit(stats)

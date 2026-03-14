@@ -11,6 +11,13 @@ from app.services.validation import validate_ecg_record_data
 
 @dataclass(slots=True)
 class ECGRecord:
+    """Canonical in-memory ECG container shared by all implemented loaders.
+
+    The model is intentionally simple for Stage 1. `annotations` stays available
+    as an extension point for future beat labels, R-peak markers and ML-related
+    metadata, but the current iteration does not populate clinical annotations.
+    """
+
     source_format: str
     file_path: str
     sampling_rate: float
@@ -53,6 +60,7 @@ class ECGRecord:
         sampling_rate: float | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> "ECGRecord":
+        """Return a validated copy with selected fields replaced."""
         return ECGRecord(
             source_format=self.source_format,
             file_path=self.file_path,

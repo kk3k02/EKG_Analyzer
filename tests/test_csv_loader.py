@@ -25,6 +25,8 @@ def test_csv_loader_reads_time_axis_from_first_column() -> None:
     assert np.isclose(record.sampling_rate, 250.0)
     assert record.lead_names == ["I", "II"]
     assert np.allclose(record.time_axis, [0.0, 0.004, 0.008])
+    assert record.metadata["time_axis_source"] == "file"
+    assert record.metadata["sampling_rate_editable"] is False
 
 
 def test_csv_loader_generates_time_axis_without_explicit_time_column() -> None:
@@ -37,3 +39,4 @@ def test_csv_loader_generates_time_axis_without_explicit_time_column() -> None:
     assert np.isclose(record.sampling_rate, 250.0)
     assert np.allclose(record.time_axis, [0.0, 0.004, 0.008])
     assert record.metadata["sampling_rate_defaulted"] is True
+    assert record.metadata["sampling_rate_editable"] is True

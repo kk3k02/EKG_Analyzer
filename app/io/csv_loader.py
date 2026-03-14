@@ -18,12 +18,25 @@ DEFAULT_CSV_SAMPLING_RATE = 250.0
 
 @dataclass(slots=True)
 class CSVParseConfig:
+    """Lightweight parsing decision bundle for tabular ECG files."""
+
     separator: str
     has_header: bool
     time_in_first_column: bool
 
 
 class CSVECGLoader(BaseECGLoader):
+    """Load CSV/TXT ECG data into the common Stage 1 record model.
+
+    This loader supports:
+    - a first column representing time,
+    - table-only inputs where all columns are interpreted as leads,
+    - auto-detected separators and a best-effort header heuristic.
+
+    In the current iteration, manual sampling-rate override is intended mainly
+    for table-only CSV/TXT inputs without an explicit time axis.
+    """
+
     def load(self, file_path: str) -> ECGRecord:
         normalized_path = normalize_path(file_path)
         config = self._detect_config(normalized_path)
@@ -46,6 +59,7 @@ class CSVECGLoader(BaseECGLoader):
         metadata: dict[str, object] = {
             "separator": config.separator,
             "header_detected": config.has_header,
+            "sampling_rate_editable": False,
         }
 
         if config.time_in_first_column:
@@ -53,11 +67,20 @@ class CSVECGLoader(BaseECGLoader):
             signal_frame = signal_frame.iloc[:, 1:]
             sampling_rate = self._infer_sampling_rate(time_axis)
             metadata["time_axis_source"] = "file"
+            metadata["sampling_rate_note"] = (
+                "Sampling rate was inferred from the explicit time axis. "
+                "Manual override is intentionally limited in this case."
+            )
         else:
             sampling_rate = DEFAULT_CSV_SAMPLING_RATE
             time_axis = build_time_axis(len(signal_frame), sampling_rate)
             metadata["time_axis_source"] = "generated"
             metadata["sampling_rate_defaulted"] = True
+            metadata["sampling_rate_editable"] = True
+            metadata["sampling_rate_note"] = (
+                "Sampling rate uses a safe default because the file has no explicit time axis. "
+                "Manual override is intended mainly for this scenario."
+            )
 
         signal = signal_frame.to_numpy(dtype=float)
         lead_names = self._resolve_lead_names(signal_frame, has_header=config.has_header)
@@ -75,6 +98,7 @@ class CSVECGLoader(BaseECGLoader):
         )
 
     def _detect_config(self, file_path: str) -> CSVParseConfig:
+        """Inspect a short sample to infer delimiter, header and time column."""
         with Path(file_path).open("r", encoding="utf-8", newline="") as handle:
             sample = handle.read(4096)
         try:
@@ -104,6 +128,7 @@ class CSVECGLoader(BaseECGLoader):
         return CSVParseConfig(separator=separator, has_header=has_header, time_in_first_column=time_in_first_column)
 
     def _looks_like_time_column(self, values: np.ndarray, *, column_name: str, has_header: bool) -> bool:
+        """Return True only when the first column looks like an explicit time axis."""
         numeric = pd.to_numeric(pd.Series(values), errors="coerce").dropna().to_numpy(dtype=float)
         if numeric.size < 3:
             return False
@@ -120,13 +145,16 @@ class CSVECGLoader(BaseECGLoader):
         return starts_near_zero and 0.0001 <= median_step <= 1.0
 
     def _infer_sampling_rate(self, time_axis: np.ndarray) -> float:
+        """Infer a representative sampling rate from a monotonic time axis."""
         diffs = np.diff(time_axis)
         positive_diffs = diffs[diffs > 0]
         if positive_diffs.size == 0:
-            raise ValueError("Could not infer sampling rate from CSV/TXT time axis.")
+            raise ValueError(
+                "CSV/TXT contains an explicit time axis, but a stable sampling rate could not be inferred from it."
+            )
         median_step = float(np.median(positive_diffs))
         if median_step <= 0:
-            raise ValueError("Invalid time axis step in CSV/TXT file.")
+            raise ValueError("CSV/TXT contains an invalid explicit time axis.")
         return 1.0 / median_step
 
     def _resolve_lead_names(self, dataframe: pd.DataFrame, *, has_header: bool) -> list[str]:

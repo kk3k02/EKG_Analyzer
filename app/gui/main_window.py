@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
 
 import numpy as np
 from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, Signal
@@ -43,6 +42,8 @@ class LoaderSignals(QObject):
 
 
 class LoadFileTask(QRunnable):
+    """Background loader task used to keep the GUI responsive."""
+
     def __init__(self, file_path: str) -> None:
         super().__init__()
         self.file_path = file_path
@@ -59,6 +60,8 @@ class LoadFileTask(QRunnable):
 
 
 class MainWindow(QMainWindow):
+    """Main Stage 1 ECG import and visualization window."""
+
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("EKG Viewer - Etap 1")
@@ -109,7 +112,12 @@ class MainWindow(QMainWindow):
         self.status_bar = QStatusBar(self)
         self.setStatusBar(self.status_bar)
         self.cursor_label = QLabel("Kursor: -")
-        self.selection_label = QLabel("Zaznaczenie: -")
+        self.selection_label = QLabel("Zaznaczenie techniczne: -")
+        self.selection_label.setToolTip(
+            "Techniczne statystyki jednego odprowadzenia: aktywnego w trybie single "
+            "albo najblizszego interakcji w trybie stacked. Bez adnotacji klinicznych, "
+            "detekcji zalamkow i analizy wieloodprowadzeniowej."
+        )
         self.status_bar.addPermanentWidget(self.cursor_label, stretch=1)
         self.status_bar.addPermanentWidget(self.selection_label, stretch=2)
 
@@ -152,6 +160,27 @@ class MainWindow(QMainWindow):
         self.plot_widget.cursor_changed.connect(self._update_cursor_status)
         self.plot_widget.selection_changed.connect(self._update_selection_status)
 
+    @staticmethod
+    def _sampling_rate_control_state(record: ECGRecord) -> tuple[bool, str]:
+        """Describe whether manual sampling-rate override is appropriate."""
+        if record.source_format != "csv":
+            return (
+                False,
+                "Sampling rate comes from the source file for WFDB/EDF. "
+                "Manual override is intended mainly for CSV/TXT without an explicit time axis.",
+            )
+        if record.metadata.get("time_axis_source") == "file":
+            return (
+                False,
+                "This CSV/TXT file contains an explicit time axis, so sampling rate is inferred from it. "
+                "Manual override is intentionally limited in this case.",
+            )
+        return (
+            True,
+            "Use this mainly for CSV/TXT without an explicit time axis. "
+            "Changing the value rebuilds only the generated time axis for the current import.",
+        )
+
     def _choose_file(self) -> None:
         file_path, _ = QFileDialog.getOpenFileName(
             self,
@@ -161,7 +190,7 @@ class MainWindow(QMainWindow):
         )
         if not file_path:
             return
-        self.status_bar.showMessage("Ładowanie pliku...", 5000)
+        self.status_bar.showMessage("Ladowanie pliku...", 5000)
         task = LoadFileTask(file_path)
         task.signals.finished.connect(self._handle_loaded_record)
         task.signals.failed.connect(self._handle_load_error)
@@ -182,19 +211,26 @@ class MainWindow(QMainWindow):
         self.preview_signal = payload.preview_signal
         self.metadata_panel.set_record(payload.record)
         self.controls.set_leads(payload.record.lead_names)
+        sampling_rate_enabled, sampling_rate_tooltip = self._sampling_rate_control_state(payload.record)
         self.controls.set_sampling_rate_controls(
             payload.record.sampling_rate,
-            enabled=payload.record.source_format == "csv",
+            enabled=sampling_rate_enabled,
+            tooltip=sampling_rate_tooltip,
         )
         self.plot_widget.set_record(payload.record, payload.preview_signal)
+        self.selection_label.setText("Zaznaczenie techniczne: -")
         self.status_bar.showMessage(f"Wczytano {payload.record.file_name}", 5000)
 
     def _handle_load_error(self, message: str) -> None:
-        QMessageBox.critical(self, "Błąd odczytu", message)
-        self.status_bar.showMessage("Nie udało się wczytać pliku.", 5000)
+        QMessageBox.critical(self, "Blad odczytu", message)
+        self.status_bar.showMessage("Nie udalo sie wczytac pliku.", 5000)
 
     def _override_sampling_rate(self, value: float) -> None:
-        if self.current_record is None or self.current_record.source_format != "csv":
+        if self.current_record is None:
+            return
+        enabled, tooltip = self._sampling_rate_control_state(self.current_record)
+        if not enabled:
+            self.status_bar.showMessage(tooltip, 7000)
             return
         self.current_record = self._build_record_with_sampling_rate(self.current_record, value)
         self.preview_signal = build_preview_signal(
@@ -204,12 +240,22 @@ class MainWindow(QMainWindow):
             apply_lowpass=True,
         )
         self.metadata_panel.set_record(self.current_record)
+        self.controls.set_sampling_rate_controls(
+            self.current_record.sampling_rate,
+            enabled=True,
+            tooltip=self._sampling_rate_control_state(self.current_record)[1],
+        )
         self.plot_widget.set_record(self.current_record, self.preview_signal)
+        self.status_bar.showMessage("Zaktualizowano sampling rate dla tabelarycznego CSV/TXT bez osi czasu.", 5000)
 
     def _build_record_with_sampling_rate(self, record: ECGRecord, sampling_rate: float) -> ECGRecord:
+        """Rebuild only generated CSV/TXT time axes after a manual sampling-rate change."""
         metadata = record.metadata.copy()
         metadata["sampling_rate_defaulted"] = False
         metadata["sampling_rate_overridden"] = True
+        metadata["sampling_rate_note"] = (
+            "Sampling rate was manually overridden for a CSV/TXT import without an explicit time axis."
+        )
         return record.copy_with(
             sampling_rate=sampling_rate,
             time_axis=build_time_axis(record.n_samples, sampling_rate),
@@ -218,12 +264,12 @@ class MainWindow(QMainWindow):
 
     def _update_cursor_status(self, info: CursorInfo) -> None:
         self.cursor_label.setText(
-            f"Kursor: t={info.time_value:.3f} s | próbka={info.sample_index} | amp={info.amplitude:.4f} | lead={info.lead_name}"
+            f"Kursor: t={info.time_value:.3f} s | probka={info.sample_index} | amp={info.amplitude:.4f} | lead={info.lead_name}"
         )
 
     def _update_selection_status(self, stats: SelectionStats) -> None:
         self.selection_label.setText(
-            "Zaznaczenie: "
+            "Zaznaczenie techniczne: "
             f"{stats.start_time:.3f}-{stats.end_time:.3f} s | dt={stats.duration:.3f} s | "
             f"min={stats.minimum:.4f} | max={stats.maximum:.4f} | mean={stats.mean:.4f} | std={stats.std:.4f}"
         )

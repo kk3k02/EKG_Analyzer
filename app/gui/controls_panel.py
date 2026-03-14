@@ -50,7 +50,12 @@ class ControlsPanel(QWidget):
         self.sampling_rate_spin.setSuffix(" Hz")
         self.sampling_rate_spin.setEnabled(False)
         self.sampling_rate_spin.valueChanged.connect(self.sampling_rate_changed.emit)
-        layout.addWidget(QLabel("Sampling rate override"))
+        self.sampling_rate_label = QLabel("Sampling rate override")
+        self.sampling_rate_label.setToolTip(
+            "Use this mainly for CSV/TXT data without an explicit time column. "
+            "WFDB and EDF keep sampling rate from the source file."
+        )
+        layout.addWidget(self.sampling_rate_label)
         layout.addWidget(self.sampling_rate_spin)
 
         leads_group = QGroupBox("Odprowadzenia")
@@ -82,14 +87,14 @@ class ControlsPanel(QWidget):
 
         preset_group = QGroupBox("Okno czasu")
         preset_layout = QHBoxLayout(preset_group)
-        for label, value in (("2 s", 2), ("5 s", 5), ("10 s", 10), ("30 s", 30), ("Cały", None)):
+        for label, value in (("2 s", 2), ("5 s", 5), ("10 s", 10), ("30 s", 30), ("Caly", None)):
             button = QPushButton(label)
             button.clicked.connect(lambda checked=False, v=value: self.window_preset_selected.emit(v))
             preset_layout.addWidget(button)
         layout.addWidget(preset_group)
 
         jump_layout = QHBoxLayout()
-        self.start_button = QPushButton("Początek")
+        self.start_button = QPushButton("Poczatek")
         self.end_button = QPushButton("Koniec")
         self.start_button.clicked.connect(self.go_to_start_requested.emit)
         self.end_button.clicked.connect(self.go_to_end_requested.emit)
@@ -101,16 +106,16 @@ class ControlsPanel(QWidget):
         self.reset_button.clicked.connect(self.reset_view_requested.emit)
         layout.addWidget(self.reset_button)
 
-        self.grid_checkbox = QCheckBox("Pokaż siatkę")
+        self.grid_checkbox = QCheckBox("Pokaz siatke")
         self.grid_checkbox.setChecked(True)
         self.grid_checkbox.toggled.connect(self.grid_toggled.emit)
         layout.addWidget(self.grid_checkbox)
 
-        self.filtered_checkbox = QCheckBox("Pokaż sygnał filtrowany do podglądu")
+        self.filtered_checkbox = QCheckBox("Pokaz sygnal filtrowany do podgladu")
         self.filtered_checkbox.toggled.connect(self.filtered_toggled.emit)
         layout.addWidget(self.filtered_checkbox)
 
-        self.raw_checkbox = QCheckBox("Pokaż surowy sygnał")
+        self.raw_checkbox = QCheckBox("Pokaz surowy sygnal")
         self.raw_checkbox.setChecked(True)
         self.raw_checkbox.toggled.connect(self.raw_toggled.emit)
         layout.addWidget(self.raw_checkbox)
@@ -133,10 +138,12 @@ class ControlsPanel(QWidget):
         self.active_lead_combo.blockSignals(False)
         self._emit_visibility()
 
-    def set_sampling_rate_controls(self, sampling_rate: float, enabled: bool) -> None:
+    def set_sampling_rate_controls(self, sampling_rate: float, enabled: bool, tooltip: str) -> None:
         self.sampling_rate_spin.blockSignals(True)
         self.sampling_rate_spin.setValue(sampling_rate)
         self.sampling_rate_spin.setEnabled(enabled)
+        self.sampling_rate_spin.setToolTip(tooltip)
+        self.sampling_rate_label.setToolTip(tooltip)
         self.sampling_rate_spin.blockSignals(False)
 
     def _emit_visibility(self) -> None:

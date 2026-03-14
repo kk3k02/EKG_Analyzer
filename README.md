@@ -1,8 +1,8 @@
 # EKG Viewer - Etap 1
 
-Desktopowa aplikacja w Pythonie do importu i interaktywnej wizualizacji sygnałów EKG.
+Desktopowa aplikacja w Pythonie do importu i interaktywnej wizualizacji sygnalow EKG.
 
-## Struktura katalogów
+## Struktura katalogow
 
 ```text
 app/
@@ -17,12 +17,12 @@ requirements.txt
 README.md
 ```
 
-## Obsługiwane formaty
+## Obslugiwane formaty
 
 - WFDB (`.hea` + `.dat`)
 - EDF / EDF+ (`.edf`)
 - CSV / TXT (`.csv`, `.txt`)
-- DICOM waveform (`.dcm`) jako przygotowany punkt rozszerzeń z kontrolowanym stubem
+- DICOM waveform (`.dcm`) jako przygotowany punkt rozszerzen z kontrolowanym stubem
 
 ## Uruchomienie
 
@@ -36,37 +36,40 @@ python -m app.main
 ## Testy
 
 ```powershell
-pytest
+pytest tests -p no:cacheprovider
 ```
 
-## Najważniejsze decyzje architektoniczne
+## Najwazniejsze decyzje architektoniczne
 
-- `ECGRecord` jest wspólnym modelem wewnętrznym dla wszystkich loaderów.
-- Warstwa `io/` odpowiada wyłącznie za odczyt i normalizację danych do `ECGRecord`.
-- Warstwa `services/` trzyma walidację, preprocessing podglądowy i statystyki zaznaczenia.
+- `ECGRecord` jest wspolnym modelem wewnetrznym dla wszystkich loaderow.
+- Warstwa `io/` odpowiada wylacznie za odczyt i normalizacje danych do `ECGRecord`.
+- Warstwa `services/` trzyma walidacje, preprocessing podgladowy i statystyki zaznaczenia.
 - GUI jest rozbite na panel sterowania, panel metadanych i widget wykresu oparty o `pyqtgraph`.
-- Ładowanie plików działa w tle przez `QThreadPool`, żeby nie blokować GUI.
+- Ladowanie plikow dziala w tle przez `QThreadPool`, zeby nie blokowac GUI.
 
 ## Przygotowanie pod kolejne etapy
 
-- `ECGRecord.annotations` jest miejscem pod adnotacje beatów i zdarzeń.
-- `services/preprocessing.py` jest punktem wejścia pod bardziej zaawansowany preprocessing w Etapie 2.
-- `services/selection_stats.py` i architektura `gui/plot_widget.py` nadają się do rozszerzenia o R-peaki i znaczniki diagnostyczne.
-- `io/dicom_loader.py` jest jawnie wydzielonym stubem dla późniejszego loadera waveform DICOM.
-- W przyszłości można dodać `services/features.py` i `ml/` bez mieszania logiki ML z warstwą GUI.
+- `ECGRecord.annotations` jest miejscem pod adnotacje beatow i zdarzen.
+- `services/preprocessing.py` jest punktem wejscia pod bardziej zaawansowany preprocessing w Etapie 2.
+- `services/selection_stats.py` i architektura `gui/plot_widget.py` nadaja sie do rozszerzenia o R-peaki i znaczniki diagnostyczne.
+- `io/dicom_loader.py` jest jawnie wydzielonym stubem dla pozniejszego loadera waveform DICOM.
+- W przyszlosci mozna dodac `services/features.py` i `ml/` bez mieszania logiki ML z warstwa GUI.
 
 ## Interakcje w GUI
 
-- Pan i zoom myszą po wykresie `pyqtgraph`
-- Wspólny pionowy kursor czasu
+- Pan i zoom mysza po wykresie `pyqtgraph`
+- Wspolny pionowy kursor czasu
 - Zaznaczanie obszaru z `Shift + lewy klik`
 - Widok stacked multi-lead i single lead focus
-- Przełączanie odprowadzeń
-- Overview paska całego sygnału
-- Surowy i filtrowany sygnał do podglądu
+- Przelaczanie odprowadzen
+- Overview paska calego sygnalu
+- Surowy i filtrowany sygnal do podgladu
 
 ## Ograniczenia obecnej iteracji
 
-- DICOM waveform nie jest jeszcze w pełni zaimplementowany.
-- Zmiana sampling rate po wczytaniu dotyczy głównie CSV/TXT bez jawnej osi czasu.
-- Statystyki zaznaczenia są liczone dla aktywnego lub najbliższego odprowadzenia, bez zaawansowanych adnotacji klinicznych.
+1. DICOM waveform
+   Obsluga DICOM waveform nie jest jeszcze pelna. `app/io/dicom_loader.py` pozostaje swiadomym stubem architektonicznym i przy probie wczytania `.dcm` aplikacja komunikuje, ze ta sciezka jest jeszcze niepelna.
+2. Sampling rate
+   Reczna zmiana `sampling_rate` ma sens glownie dla CSV/TXT bez jawnej osi czasu. Dla WFDB i EDF wartosc z pliku jest traktowana jako zrodlo prawdy. Dla CSV/TXT z jawna kolumna czasu sampling rate jest wyliczany z osi czasu, a reczna zmiana pozostaje celowo ograniczona.
+3. Statystyki zaznaczenia
+   Pokazywane wartosci `min`, `max`, `mean`, `std` sa technicznymi statystykami jednego odprowadzenia: aktywnego w trybie single albo najblizszego interakcji w trybie stacked. To nie sa statystyki kliniczne i aplikacja nie realizuje jeszcze adnotacji klinicznych, detekcji zalamkow, analizy PQ/QRS/QT/ST ani analizy wieloodprowadzeniowej.
