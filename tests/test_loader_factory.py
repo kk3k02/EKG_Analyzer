@@ -19,8 +19,3 @@ def test_loader_factory_resolves_known_formats() -> None:
 def test_loader_factory_rejects_unknown_format() -> None:
     with pytest.raises(ValueError):
         LoaderFactory.create_loader("record.xyz")
-
-
-def test_dicom_loader_reports_partial_support() -> None:
-    with pytest.raises(NotImplementedError, match="DICOM waveform"):
-        DICOMECGLoader().load("record.dcm")

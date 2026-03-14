@@ -11,7 +11,7 @@ from app.gui.main_window import MainWindow
 def main() -> int:
     QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     app = QApplication(sys.argv)
-    app.setApplicationName("EKG Viewer - Etap 1")
+    app.setApplicationName("EKG Viewer")
 
     window = MainWindow()
     window.show()

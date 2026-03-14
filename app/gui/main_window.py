@@ -64,7 +64,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("EKG Viewer - Etap 1")
+        self.setWindowTitle("EKG Viewer")
 
         self.thread_pool = QThreadPool.globalInstance()
         self.current_record: ECGRecord | None = None
@@ -166,7 +166,7 @@ class MainWindow(QMainWindow):
         if record.source_format != "csv":
             return (
                 False,
-                "Sampling rate comes from the source file for WFDB/EDF. "
+                "Sampling rate comes from the source file for WFDB, EDF and DICOM. "
                 "Manual override is intended mainly for CSV/TXT without an explicit time axis.",
             )
         if record.metadata.get("time_axis_source") == "file":

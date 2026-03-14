@@ -53,7 +53,7 @@ class ControlsPanel(QWidget):
         self.sampling_rate_label = QLabel("Sampling rate override")
         self.sampling_rate_label.setToolTip(
             "Use this mainly for CSV/TXT data without an explicit time column. "
-            "WFDB and EDF keep sampling rate from the source file."
+            "WFDB, EDF and DICOM keep sampling rate from the source file."
         )
         layout.addWidget(self.sampling_rate_label)
         layout.addWidget(self.sampling_rate_spin)
