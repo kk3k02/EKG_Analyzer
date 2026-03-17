@@ -4,11 +4,16 @@ from dataclasses import dataclass
 
 import numpy as np
 import pyqtgraph as pg
-from PySide6.QtCore import QObject, Qt, Signal
-from PySide6.QtWidgets import QSizePolicy, QVBoxLayout, QWidget
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtWidgets import QCheckBox, QHBoxLayout, QLabel, QSizePolicy, QStackedLayout, QVBoxLayout, QWidget
 
 from app.models.ecg_record import ECGRecord
-from app.services.selection_stats import SelectionStats, compute_selection_stats
+from app.services.frequency_overview import (
+    DEFAULT_MAX_FREQUENCY_HZ,
+    FrequencyOverviewResult,
+    compute_frequency_overview,
+)
+from app.services.selection_stats import compute_selection_stats
 
 
 @dataclass(slots=True)
@@ -48,16 +53,42 @@ class ECGPlotWidget(QWidget):
         self.main_plot.setLabel("left", "Amplitude")
         self.main_plot.addLegend(offset=(10, 10))
 
+        overview_container = QWidget(self)
+        overview_layout = QVBoxLayout(overview_container)
+        overview_layout.setContentsMargins(0, 0, 0, 0)
+        overview_layout.setSpacing(4)
+
+        overview_header = QHBoxLayout()
+        overview_header.setContentsMargins(0, 0, 0, 0)
+        self.overview_title = QLabel("Frequency overview", self)
+        self.overview_title.setStyleSheet("font-weight: 600;")
+        self.log_scale_checkbox = QCheckBox("Log scale", self)
+        self.log_scale_checkbox.toggled.connect(self.update_frequency_overview_plot)
+        overview_header.addWidget(self.overview_title)
+        overview_header.addStretch(1)
+        overview_header.addWidget(self.log_scale_checkbox)
+        overview_layout.addLayout(overview_header)
+
         self.overview_plot = pg.PlotWidget()
         self.overview_plot.setMinimumHeight(90)
         self.overview_plot.setMaximumHeight(140)
         self.overview_plot.setBackground("w")
         self.overview_plot.setMouseEnabled(x=False, y=False)
-        self.overview_plot.hideAxis("left")
-        self.overview_plot.setLabel("bottom", "Overview", units="s")
+        self.overview_plot.showGrid(x=True, y=True, alpha=0.15)
+        self.overview_plot.setLabel("bottom", "Frequency", units="Hz")
+        self.overview_plot.setLabel("left", "Power spectral density")
+
+        self.overview_empty_label = QLabel("Load a file to see the frequency overview.", self)
+        self.overview_empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.overview_empty_label.setStyleSheet("color: #666666;")
+
+        self.overview_stack = QStackedLayout()
+        self.overview_stack.addWidget(self.overview_plot)
+        self.overview_stack.addWidget(self.overview_empty_label)
+        overview_layout.addLayout(self.overview_stack)
 
         layout.addWidget(self.main_plot, stretch=1)
-        layout.addWidget(self.overview_plot)
+        layout.addWidget(overview_container)
 
         self._record: ECGRecord | None = None
         self._preview_signal: np.ndarray | None = None
@@ -68,7 +99,10 @@ class ECGPlotWidget(QWidget):
         self._active_lead = 0
         self._lead_visibility: dict[int, bool] = {}
         self._curves: list[pg.PlotDataItem] = []
-        self._overview_curves: list[pg.PlotDataItem] = []
+        self._overview_plot_item: pg.PlotDataItem | None = None
+        self._frequency_markers: list[pg.InfiniteLine] = []
+        self._overview_mode = "frequency"
+        self._max_frequency_hz = DEFAULT_MAX_FREQUENCY_HZ
 
         self.cursor_line = pg.InfiniteLine(angle=90, movable=False, pen=pg.mkPen("#8B0000", width=1))
         self.main_plot.addItem(self.cursor_line, ignoreBounds=True)
@@ -79,12 +113,7 @@ class ECGPlotWidget(QWidget):
         self.main_plot.addItem(self.selection_region, ignoreBounds=True)
         self.selection_region.hide()
 
-        self.overview_region = pg.LinearRegionItem(values=(0, 1), movable=True, brush=(30, 120, 200, 30))
-        self.overview_region.sigRegionChanged.connect(self._sync_main_from_overview)
-        self.overview_plot.addItem(self.overview_region)
-        self.overview_region.hide()
-
-        self.main_plot.sigXRangeChanged.connect(self._sync_overview_from_main)
+        self.main_plot.sigXRangeChanged.connect(self._handle_main_plot_range_changed)
         self._mouse_proxy = pg.SignalProxy(self.main_plot.scene().sigMouseMoved, rateLimit=60, slot=self._on_mouse_moved)
         self._main_plot_mouse_proxy = pg.SignalProxy(
             self.main_plot.scene().sigMouseClicked,
@@ -159,13 +188,13 @@ class ECGPlotWidget(QWidget):
         self.overview_plot.clear()
         self.main_plot.addItem(self.cursor_line, ignoreBounds=True)
         self.main_plot.addItem(self.selection_region, ignoreBounds=True)
-        self.overview_plot.addItem(self.overview_region)
         self._curves.clear()
-        self._overview_curves.clear()
+        self._overview_plot_item = None
+        self._frequency_markers.clear()
 
         if self._record is None:
             self.selection_region.hide()
-            self.overview_region.hide()
+            self._show_frequency_overview_message("Load a file to see the frequency overview.")
             return
 
         self.main_plot.showGrid(x=self._show_grid, y=self._show_grid, alpha=0.25)
@@ -198,7 +227,6 @@ class ECGPlotWidget(QWidget):
                     pen=pg.mkPen(color="#111111", width=1.0, style=Qt.PenStyle.DashLine),
                     name=f"{lead_name} preview",
                 )
-            self.overview_plot.plot(time_axis, preview_signal[:, lead_index] + offset, pen=pg.mkPen(color=color, width=1.0))
 
             if self._view_mode == "stacked":
                 label = pg.TextItem(text=lead_name, color=color, anchor=(0, 0.5))
@@ -207,9 +235,8 @@ class ECGPlotWidget(QWidget):
 
         self.selection_region.setRegion((float(time_axis[0]), min(float(time_axis[-1]), float(time_axis[0]) + 1.0)))
         self.selection_region.show()
-        self.overview_region.setRegion((float(time_axis[0]), min(float(time_axis[-1]), float(time_axis[0]) + 10.0)))
-        self.overview_region.show()
         self.main_plot.setXRange(float(time_axis[0]), min(float(time_axis[-1]), float(time_axis[0]) + 10.0), padding=0.01)
+        self.update_frequency_overview_plot()
         self._emit_selection_stats()
 
     def _compute_offsets(self, signal: np.ndarray, visible_indices: list[int]) -> dict[int, float]:
@@ -281,18 +308,115 @@ class ECGPlotWidget(QWidget):
         stats = compute_selection_stats(self._record.time_axis[mask], self._record.signal[mask, lead_index])
         self.selection_changed.emit(stats)
 
-    def _sync_main_from_overview(self) -> None:
-        if self._record is None or not self.overview_region.isVisible():
-            return
-        start, end = self.overview_region.getRegion()
-        self.main_plot.blockSignals(True)
-        self.main_plot.setXRange(start, end, padding=0.0)
-        self.main_plot.blockSignals(False)
+    def get_visible_signal_segment(self) -> tuple[np.ndarray | None, np.ndarray | None]:
+        if self._record is None:
+            return None, None
+        lead_index = self._get_frequency_overview_lead_index()
+        if lead_index is None:
+            return None, None
+        start, end = self._get_visible_time_range()
+        sample_slice = self._time_range_to_sample_slice(start, end)
+        return self._record.time_axis[sample_slice], self._record.signal[sample_slice, lead_index]
 
-    def _sync_overview_from_main(self) -> None:
-        if self._record is None or not self.overview_region.isVisible():
+    def update_frequency_overview_plot(self) -> None:
+        if self._overview_mode != "frequency":
+            self._show_frequency_overview_message("Overview mode is not available.")
             return
-        start, end = self.main_plot.viewRange()[0]
-        self.overview_region.blockSignals(True)
-        self.overview_region.setRegion((start, end))
-        self.overview_region.blockSignals(False)
+        if self._record is None:
+            self._show_frequency_overview_message("Load a file to see the frequency overview.")
+            return
+
+        lead_index = self._get_frequency_overview_lead_index()
+        if lead_index is None:
+            self._show_frequency_overview_message("Select a lead to see the frequency overview.")
+            return
+
+        _, signal_segment = self.get_visible_signal_segment()
+        if signal_segment is None or signal_segment.size == 0:
+            self._show_frequency_overview_message("Visible signal segment is empty.")
+            return
+
+        result = compute_frequency_overview(
+            signal_segment,
+            self._record.sampling_rate,
+            max_frequency_hz=self._max_frequency_hz,
+        )
+        if result.message is not None:
+            self._show_frequency_overview_message(result.message)
+            return
+
+        self._render_frequency_overview(result, self._record.lead_names[lead_index])
+
+    def _render_frequency_overview(self, result: FrequencyOverviewResult, lead_name: str) -> None:
+        self.overview_plot.clear()
+        self.overview_plot.showGrid(x=True, y=True, alpha=0.15)
+        self.overview_plot.setLabel("bottom", "Frequency", units="Hz")
+        self.overview_plot.setLabel("left", result.y_label)
+        self.overview_plot.setTitle(f"{lead_name} ({result.method.upper()})")
+
+        values = np.asarray(result.values, dtype=float)
+        if self.log_scale_checkbox.isChecked():
+            values = np.maximum(values, np.finfo(float).tiny)
+            self.overview_plot.setLogMode(x=False, y=True)
+        else:
+            self.overview_plot.setLogMode(x=False, y=False)
+
+        self._overview_plot_item = self.overview_plot.plot(
+            result.frequencies_hz,
+            values,
+            pen=pg.mkPen(color="#00429d", width=1.5),
+        )
+        self.overview_plot.setXRange(0.0, self._max_frequency_hz, padding=0.01)
+        self._add_frequency_markers()
+        self.overview_stack.setCurrentWidget(self.overview_plot)
+
+    def _add_frequency_markers(self) -> None:
+        self._frequency_markers.clear()
+        for frequency_hz, color in ((50.0, "#cc5500"), (60.0, "#666666")):
+            if frequency_hz > self._max_frequency_hz:
+                continue
+            marker = pg.InfiniteLine(
+                pos=frequency_hz,
+                angle=90,
+                movable=False,
+                pen=pg.mkPen(color=color, width=1, style=Qt.PenStyle.DashLine),
+            )
+            self.overview_plot.addItem(marker, ignoreBounds=True)
+            self._frequency_markers.append(marker)
+
+    def _show_frequency_overview_message(self, message: str) -> None:
+        self.overview_plot.clear()
+        self.overview_plot.setTitle("")
+        self.overview_empty_label.setText(message)
+        self.overview_stack.setCurrentWidget(self.overview_empty_label)
+
+    def _get_frequency_overview_lead_index(self) -> int | None:
+        if self._record is None:
+            return None
+        if self._view_mode == "single":
+            if 0 <= self._active_lead < self._record.n_leads:
+                return self._active_lead
+            return None
+        visible_indices = [index for index in range(self._record.n_leads) if self._lead_visibility.get(index, True)]
+        return visible_indices[0] if visible_indices else None
+
+    def _get_visible_time_range(self) -> tuple[float, float]:
+        if self._record is None:
+            return 0.0, 0.0
+        view_start, view_end = self.main_plot.viewRange()[0]
+        record_start = float(self._record.time_axis[0])
+        record_end = float(self._record.time_axis[-1])
+        return max(record_start, float(view_start)), min(record_end, float(view_end))
+
+    def _time_range_to_sample_slice(self, start_time: float, end_time: float) -> slice:
+        if self._record is None:
+            return slice(0, 0)
+        time_axis = self._record.time_axis
+        start_index = int(np.searchsorted(time_axis, start_time, side="left"))
+        end_index = int(np.searchsorted(time_axis, end_time, side="right"))
+        start_index = max(0, min(start_index, self._record.n_samples))
+        end_index = max(start_index + 1, min(end_index, self._record.n_samples))
+        return slice(start_index, end_index)
+
+    def _handle_main_plot_range_changed(self, *_args: object) -> None:
+        self.update_frequency_overview_plot()
