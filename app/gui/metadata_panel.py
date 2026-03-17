@@ -13,13 +13,13 @@ class MetadataPanel(QWidget):
         layout = QFormLayout(self)
 
         for key in (
-            "File",
+            "Plik",
             "Format",
-            "Sampling rate",
-            "Samples",
-            "Leads",
-            "Duration",
-            "Units",
+            "Czestotliwosc probkowania",
+            "Probki",
+            "Odprowadzenia",
+            "Czas trwania",
+            "Jednostki",
         ):
             label = QLabel("-")
             label.setTextInteractionFlags(label.textInteractionFlags())
@@ -32,10 +32,10 @@ class MetadataPanel(QWidget):
                 label.setText("-")
             return
 
-        self._labels["File"].setText(record.file_name)
+        self._labels["Plik"].setText(record.file_name)
         self._labels["Format"].setText(record.source_format.upper())
-        self._labels["Sampling rate"].setText(f"{record.sampling_rate:.2f} Hz")
-        self._labels["Samples"].setText(str(record.n_samples))
-        self._labels["Leads"].setText(str(record.n_leads))
-        self._labels["Duration"].setText(format_seconds(record.duration_seconds))
-        self._labels["Units"].setText(record.units)
+        self._labels["Czestotliwosc probkowania"].setText(f"{record.sampling_rate:.2f} Hz")
+        self._labels["Probki"].setText(str(record.n_samples))
+        self._labels["Odprowadzenia"].setText(str(record.n_leads))
+        self._labels["Czas trwania"].setText(format_seconds(record.duration_seconds))
+        self._labels["Jednostki"].setText(record.units)

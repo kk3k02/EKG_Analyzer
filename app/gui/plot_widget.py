@@ -49,8 +49,8 @@ class ECGPlotWidget(QWidget):
         self.main_plot.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.main_plot.setBackground("w")
         self.main_plot.showGrid(x=True, y=True, alpha=0.25)
-        self.main_plot.setLabel("bottom", "Time", units="s")
-        self.main_plot.setLabel("left", "Amplitude")
+        self.main_plot.setLabel("bottom", "Czas", units="s")
+        self.main_plot.setLabel("left", "Amplituda")
         self.main_plot.addLegend(offset=(10, 10))
 
         overview_container = QWidget(self)
@@ -60,9 +60,9 @@ class ECGPlotWidget(QWidget):
 
         overview_header = QHBoxLayout()
         overview_header.setContentsMargins(0, 0, 0, 0)
-        self.overview_title = QLabel("Frequency overview", self)
+        self.overview_title = QLabel("Przeglad czestotliwosci", self)
         self.overview_title.setStyleSheet("font-weight: 600;")
-        self.log_scale_checkbox = QCheckBox("Log scale", self)
+        self.log_scale_checkbox = QCheckBox("Skala log", self)
         self.log_scale_checkbox.toggled.connect(self.update_frequency_overview_plot)
         overview_header.addWidget(self.overview_title)
         overview_header.addStretch(1)
@@ -75,10 +75,10 @@ class ECGPlotWidget(QWidget):
         self.overview_plot.setBackground("w")
         self.overview_plot.setMouseEnabled(x=False, y=False)
         self.overview_plot.showGrid(x=True, y=True, alpha=0.15)
-        self.overview_plot.setLabel("bottom", "Frequency", units="Hz")
-        self.overview_plot.setLabel("left", "Power spectral density")
+        self.overview_plot.setLabel("bottom", "Czestotliwosc", units="Hz")
+        self.overview_plot.setLabel("left", "Gestosc mocy widmowej")
 
-        self.overview_empty_label = QLabel("Load a file to see the frequency overview.", self)
+        self.overview_empty_label = QLabel("Wczytaj plik, aby zobaczyc przeglad czestotliwosci.", self)
         self.overview_empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.overview_empty_label.setStyleSheet("color: #666666;")
 
@@ -92,8 +92,9 @@ class ECGPlotWidget(QWidget):
 
         self._record: ECGRecord | None = None
         self._preview_signal: np.ndarray | None = None
-        self._raw_visible = True
-        self._filtered_visible = False
+        self._filtering_active = False
+        self._raw_visible = False
+        self._filtered_visible = True
         self._show_grid = True
         self._view_mode = "stacked"
         self._active_lead = 0
@@ -121,9 +122,16 @@ class ECGPlotWidget(QWidget):
             slot=self._on_mouse_clicked,
         )
 
-    def set_record(self, record: ECGRecord | None, preview_signal: np.ndarray | None = None) -> None:
+    def set_record(
+        self,
+        record: ECGRecord | None,
+        preview_signal: np.ndarray | None = None,
+        *,
+        filtering_active: bool = False,
+    ) -> None:
         self._record = record
         self._preview_signal = preview_signal
+        self._filtering_active = filtering_active
         self._lead_visibility = {index: True for index in range(record.n_leads)} if record else {}
         self._render()
 
@@ -194,38 +202,39 @@ class ECGPlotWidget(QWidget):
 
         if self._record is None:
             self.selection_region.hide()
-            self._show_frequency_overview_message("Load a file to see the frequency overview.")
+            self._show_frequency_overview_message("Wczytaj plik, aby zobaczyc przeglad czestotliwosci.")
             return
 
         self.main_plot.showGrid(x=self._show_grid, y=self._show_grid, alpha=0.25)
         time_axis = self._record.time_axis
         raw_signal = self._record.signal
         preview_signal = self._preview_signal if self._preview_signal is not None else raw_signal
+        primary_signal = preview_signal if self._filtering_active else raw_signal
         colors = ["#00429d", "#73a2c6", "#eeb479", "#93003a", "#1b9e77", "#d95f02", "#7570b3", "#e7298a"]
 
         visible_indices = [index for index in range(self._record.n_leads) if self._lead_visibility.get(index, True)]
         if self._view_mode == "single":
             visible_indices = [self._active_lead]
 
-        stacked_offsets = self._compute_offsets(preview_signal, visible_indices)
+        stacked_offsets = self._compute_offsets(primary_signal, visible_indices)
 
         for order, lead_index in enumerate(visible_indices):
             color = colors[order % len(colors)]
             lead_name = self._record.lead_names[lead_index]
             offset = stacked_offsets.get(lead_index, 0.0)
-            if self._raw_visible:
+            if self._filtered_visible or not self._filtering_active:
+                self.main_plot.plot(
+                    time_axis,
+                    primary_signal[:, lead_index] + offset,
+                    pen=pg.mkPen(color=color, width=1.2),
+                    name=f"{lead_name} przetworzony" if self._filtering_active else f"{lead_name} surowy",
+                )
+            if self._filtering_active and self._raw_visible:
                 self.main_plot.plot(
                     time_axis,
                     raw_signal[:, lead_index] + offset,
-                    pen=pg.mkPen(color=color, width=1.2),
-                    name=f"{lead_name} raw",
-                )
-            if self._filtered_visible:
-                self.main_plot.plot(
-                    time_axis,
-                    preview_signal[:, lead_index] + offset,
-                    pen=pg.mkPen(color="#111111", width=1.0, style=Qt.PenStyle.DashLine),
-                    name=f"{lead_name} preview",
+                    pen=pg.mkPen(color="#444444", width=1.0, style=Qt.PenStyle.DashLine),
+                    name=f"{lead_name} surowy - nakladka",
                 )
 
             if self._view_mode == "stacked":
@@ -259,7 +268,8 @@ class ECGPlotWidget(QWidget):
         x_value = float(mouse_point.x())
         sample_index = int(np.clip(np.searchsorted(self._record.time_axis, x_value), 0, self._record.n_samples - 1))
         lead_index = self._active_lead if self._view_mode == "single" else self._nearest_visible_lead(mouse_point.y())
-        amplitude = float(self._record.signal[sample_index, lead_index])
+        display_signal = self._preview_signal if self._filtering_active and self._preview_signal is not None else self._record.signal
+        amplitude = float(display_signal[sample_index, lead_index])
         self.cursor_line.setPos(self._record.time_axis[sample_index])
         self.cursor_changed.emit(
             CursorInfo(
@@ -276,7 +286,8 @@ class ECGPlotWidget(QWidget):
         if self._view_mode == "single":
             return self._active_lead
         visible_indices = [index for index in range(self._record.n_leads) if self._lead_visibility.get(index, True)]
-        offsets = self._compute_offsets(self._preview_signal if self._preview_signal is not None else self._record.signal, visible_indices)
+        analysis_signal = self._preview_signal if self._filtering_active and self._preview_signal is not None else self._record.signal
+        offsets = self._compute_offsets(analysis_signal, visible_indices)
         if not offsets:
             return 0
         return min(offsets, key=lambda index: abs(offsets[index] - y_value))
@@ -305,7 +316,8 @@ class ECGPlotWidget(QWidget):
             return
         # Stage 1 keeps selection stats intentionally simple: one lead only.
         lead_index = self._active_lead if self._view_mode == "single" else self._nearest_visible_lead(0.0)
-        stats = compute_selection_stats(self._record.time_axis[mask], self._record.signal[mask, lead_index])
+        analysis_signal = self._preview_signal if self._filtering_active and self._preview_signal is not None else self._record.signal
+        stats = compute_selection_stats(self._record.time_axis[mask], analysis_signal[mask, lead_index])
         self.selection_changed.emit(stats)
 
     def get_visible_signal_segment(self) -> tuple[np.ndarray | None, np.ndarray | None]:
@@ -316,24 +328,25 @@ class ECGPlotWidget(QWidget):
             return None, None
         start, end = self._get_visible_time_range()
         sample_slice = self._time_range_to_sample_slice(start, end)
-        return self._record.time_axis[sample_slice], self._record.signal[sample_slice, lead_index]
+        analysis_signal = self._preview_signal if self._filtering_active and self._preview_signal is not None else self._record.signal
+        return self._record.time_axis[sample_slice], analysis_signal[sample_slice, lead_index]
 
     def update_frequency_overview_plot(self) -> None:
         if self._overview_mode != "frequency":
-            self._show_frequency_overview_message("Overview mode is not available.")
+            self._show_frequency_overview_message("Tryb przegladu jest niedostepny.")
             return
         if self._record is None:
-            self._show_frequency_overview_message("Load a file to see the frequency overview.")
+            self._show_frequency_overview_message("Wczytaj plik, aby zobaczyc przeglad czestotliwosci.")
             return
 
         lead_index = self._get_frequency_overview_lead_index()
         if lead_index is None:
-            self._show_frequency_overview_message("Select a lead to see the frequency overview.")
+            self._show_frequency_overview_message("Wybierz odprowadzenie, aby zobaczyc przeglad czestotliwosci.")
             return
 
         _, signal_segment = self.get_visible_signal_segment()
         if signal_segment is None or signal_segment.size == 0:
-            self._show_frequency_overview_message("Visible signal segment is empty.")
+            self._show_frequency_overview_message("Widoczny fragment sygnalu jest pusty.")
             return
 
         result = compute_frequency_overview(
@@ -350,7 +363,7 @@ class ECGPlotWidget(QWidget):
     def _render_frequency_overview(self, result: FrequencyOverviewResult, lead_name: str) -> None:
         self.overview_plot.clear()
         self.overview_plot.showGrid(x=True, y=True, alpha=0.15)
-        self.overview_plot.setLabel("bottom", "Frequency", units="Hz")
+        self.overview_plot.setLabel("bottom", "Czestotliwosc", units="Hz")
         self.overview_plot.setLabel("left", result.y_label)
         self.overview_plot.setTitle(f"{lead_name} ({result.method.upper()})")
 

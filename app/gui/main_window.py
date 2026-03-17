@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import warnings
 
 import numpy as np
 from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, Signal
@@ -25,7 +26,7 @@ from app.gui.metadata_panel import MetadataPanel
 from app.gui.plot_widget import CursorInfo, ECGPlotWidget
 from app.io.loader_factory import LoaderFactory
 from app.models.ecg_record import ECGRecord
-from app.services.preprocessing import build_preview_signal
+from app.services.preprocessing import SignalFilterConfig, default_filter_config, preprocess_signal
 from app.services.selection_stats import SelectionStats
 from app.services.validation import build_time_axis
 
@@ -33,7 +34,6 @@ from app.services.validation import build_time_axis
 @dataclass(slots=True)
 class LoadedRecord:
     record: ECGRecord
-    preview_signal: np.ndarray
 
 
 class LoaderSignals(QObject):
@@ -53,8 +53,7 @@ class LoadFileTask(QRunnable):
         try:
             loader = LoaderFactory.create_loader(self.file_path)
             record = loader.load(self.file_path)
-            preview_signal = build_preview_signal(record.signal, record.sampling_rate, remove_baseline=True, apply_lowpass=True)
-            self.signals.finished.emit(LoadedRecord(record=record, preview_signal=preview_signal))
+            self.signals.finished.emit(LoadedRecord(record=record))
         except Exception as exc:
             self.signals.failed.emit(str(exc))
 
@@ -68,7 +67,8 @@ class MainWindow(QMainWindow):
 
         self.thread_pool = QThreadPool.globalInstance()
         self.current_record: ECGRecord | None = None
-        self.preview_signal: np.ndarray | None = None
+        self.processed_signal: np.ndarray | None = None
+        self.filter_config: SignalFilterConfig = default_filter_config()
 
         central_widget = QWidget(self)
         self.setCentralWidget(central_widget)
@@ -111,6 +111,7 @@ class MainWindow(QMainWindow):
 
         self.status_bar = QStatusBar(self)
         self.setStatusBar(self.status_bar)
+        self.file_info_label = QLabel("Plik: -")
         self.cursor_label = QLabel("Kursor: -")
         self.selection_label = QLabel("Zaznaczenie techniczne: -")
         self.selection_label.setToolTip(
@@ -118,11 +119,13 @@ class MainWindow(QMainWindow):
             "albo najblizszego interakcji w trybie stacked. Bez adnotacji klinicznych, "
             "detekcji zalamkow i analizy wieloodprowadzeniowej."
         )
+        self.status_bar.addWidget(self.file_info_label, stretch=2)
         self.status_bar.addPermanentWidget(self.cursor_label, stretch=1)
         self.status_bar.addPermanentWidget(self.selection_label, stretch=2)
 
         self._connect_signals()
         self._apply_screen_adaptive_geometry(splitter)
+        self.controls.sync_signal_display_mode(filters_active=False)
 
     def _apply_screen_adaptive_geometry(self, splitter: QSplitter) -> None:
         screen = self.screen() or QGuiApplication.primaryScreen()
@@ -156,13 +159,13 @@ class MainWindow(QMainWindow):
         self.controls.go_to_start_requested.connect(self.plot_widget.go_to_start)
         self.controls.go_to_end_requested.connect(self.plot_widget.go_to_end)
         self.controls.sampling_rate_changed.connect(self._override_sampling_rate)
+        self.controls.filter_config_changed.connect(self._apply_filter_config)
 
         self.plot_widget.cursor_changed.connect(self._update_cursor_status)
         self.plot_widget.selection_changed.connect(self._update_selection_status)
 
     @staticmethod
     def _sampling_rate_control_state(record: ECGRecord) -> tuple[bool, str]:
-        """Describe whether manual sampling-rate override is appropriate."""
         if record.source_format != "csv":
             return (
                 False,
@@ -202,24 +205,20 @@ class MainWindow(QMainWindow):
             dialog = SamplingRateDialog(record.sampling_rate, self)
             if dialog.exec():
                 record = self._build_record_with_sampling_rate(record, dialog.sampling_rate)
-                payload = LoadedRecord(
-                    record=record,
-                    preview_signal=build_preview_signal(record.signal, record.sampling_rate, remove_baseline=True, apply_lowpass=True),
-                )
 
-        self.current_record = payload.record
-        self.preview_signal = payload.preview_signal
-        self.metadata_panel.set_record(payload.record)
-        self.controls.set_leads(payload.record.lead_names)
-        sampling_rate_enabled, sampling_rate_tooltip = self._sampling_rate_control_state(payload.record)
+        self.current_record = record
+        self.metadata_panel.set_record(record)
+        self._update_file_info(record)
+        self.controls.set_leads(record.lead_names)
+        sampling_rate_enabled, sampling_rate_tooltip = self._sampling_rate_control_state(record)
         self.controls.set_sampling_rate_controls(
-            payload.record.sampling_rate,
+            record.sampling_rate,
             enabled=sampling_rate_enabled,
             tooltip=sampling_rate_tooltip,
         )
-        self.plot_widget.set_record(payload.record, payload.preview_signal)
+        self._refresh_processed_signal()
         self.selection_label.setText("Zaznaczenie techniczne: -")
-        self.status_bar.showMessage(f"Wczytano {payload.record.file_name}", 5000)
+        self.status_bar.showMessage(f"Wczytano {record.file_name}", 5000)
 
     def _handle_load_error(self, message: str) -> None:
         QMessageBox.critical(self, "Blad odczytu", message)
@@ -233,23 +232,42 @@ class MainWindow(QMainWindow):
             self.status_bar.showMessage(tooltip, 7000)
             return
         self.current_record = self._build_record_with_sampling_rate(self.current_record, value)
-        self.preview_signal = build_preview_signal(
-            self.current_record.signal,
-            self.current_record.sampling_rate,
-            remove_baseline=True,
-            apply_lowpass=True,
-        )
         self.metadata_panel.set_record(self.current_record)
         self.controls.set_sampling_rate_controls(
             self.current_record.sampling_rate,
             enabled=True,
             tooltip=self._sampling_rate_control_state(self.current_record)[1],
         )
-        self.plot_widget.set_record(self.current_record, self.preview_signal)
+        self._refresh_processed_signal()
         self.status_bar.showMessage("Zaktualizowano sampling rate dla tabelarycznego CSV/TXT bez osi czasu.", 5000)
 
+    def _apply_filter_config(self, config: SignalFilterConfig) -> None:
+        self.filter_config = config
+        self._refresh_processed_signal()
+
+    def _refresh_processed_signal(self) -> None:
+        if self.current_record is None:
+            self.processed_signal = None
+            self._update_file_info(None)
+            self.plot_widget.set_record(None, None, filtering_active=False)
+            return
+        with warnings.catch_warnings(record=True) as captured_warnings:
+            warnings.simplefilter("always", RuntimeWarning)
+            self.processed_signal = preprocess_signal(
+                self.current_record.signal,
+                self.current_record.sampling_rate,
+                self.filter_config,
+            )
+        self.plot_widget.set_record(
+            self.current_record,
+            self.processed_signal,
+            filtering_active=self.filter_config.any_enabled(),
+        )
+        self.controls.sync_signal_display_mode(filters_active=self.filter_config.any_enabled())
+        if captured_warnings:
+            self.status_bar.showMessage(str(captured_warnings[-1].message), 7000)
+
     def _build_record_with_sampling_rate(self, record: ECGRecord, sampling_rate: float) -> ECGRecord:
-        """Rebuild only generated CSV/TXT time axes after a manual sampling-rate change."""
         metadata = record.metadata.copy()
         metadata["sampling_rate_defaulted"] = False
         metadata["sampling_rate_overridden"] = True
@@ -272,4 +290,13 @@ class MainWindow(QMainWindow):
             "Zaznaczenie techniczne: "
             f"{stats.start_time:.3f}-{stats.end_time:.3f} s | dt={stats.duration:.3f} s | "
             f"min={stats.minimum:.4f} | max={stats.maximum:.4f} | mean={stats.mean:.4f} | std={stats.std:.4f}"
+        )
+
+    def _update_file_info(self, record: ECGRecord | None) -> None:
+        if record is None:
+            self.file_info_label.setText("Plik: -")
+            return
+        self.file_info_label.setText(
+            f"Plik: {record.file_name} | format: {record.source_format.upper()} | "
+            f"fs: {record.sampling_rate:.2f} Hz | odprowadzenia: {record.n_leads}"
         )

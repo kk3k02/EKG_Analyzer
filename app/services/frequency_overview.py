@@ -34,9 +34,9 @@ def compute_frequency_overview(
         return FrequencyOverviewResult(
             frequencies_hz=np.array([], dtype=float),
             values=np.array([], dtype=float),
-            y_label="Power spectral density",
+            y_label="Gestosc mocy widmowej",
             method="invalid",
-            message="Sampling rate is missing or invalid.",
+            message="Czestotliwosc probkowania jest niepoprawna albo nieznana.",
         )
 
     segment = np.asarray(signal_segment, dtype=float).reshape(-1)
@@ -45,9 +45,9 @@ def compute_frequency_overview(
         return FrequencyOverviewResult(
             frequencies_hz=np.array([], dtype=float),
             values=np.array([], dtype=float),
-            y_label="Power spectral density",
+            y_label="Gestosc mocy widmowej",
             method="invalid",
-            message="Signal segment is empty.",
+            message="Fragment sygnalu jest pusty.",
         )
 
     segment = segment[finite_mask]
@@ -55,20 +55,20 @@ def compute_frequency_overview(
         return FrequencyOverviewResult(
             frequencies_hz=np.array([], dtype=float),
             values=np.array([], dtype=float),
-            y_label="Power spectral density",
+            y_label="Gestosc mocy widmowej",
             method="too_short",
-            message="Visible signal segment is too short for frequency analysis.",
+            message="Widoczny fragment sygnalu jest zbyt krotki do analizy czestotliwosciowej.",
         )
 
     segment = segment - float(np.mean(segment))
 
     if welch is not None:
         frequencies_hz, values = _compute_welch_psd(segment, sampling_rate)
-        y_label = "Power spectral density"
+        y_label = "Gestosc mocy widmowej"
         method = "welch"
     else:
         frequencies_hz, values = _compute_fft_amplitude(segment, sampling_rate)
-        y_label = "Amplitude spectrum"
+        y_label = "Amplituda widma"
         method = "fft"
 
     frequency_mask = (frequencies_hz >= 0.0) & (frequencies_hz <= max_frequency_hz)
@@ -81,7 +81,7 @@ def compute_frequency_overview(
             values=np.array([], dtype=float),
             y_label=y_label,
             method=method,
-            message="No frequency bins are available in the selected range.",
+            message="Brak probek widma w wybranym zakresie czestotliwosci.",
         )
 
     return FrequencyOverviewResult(
