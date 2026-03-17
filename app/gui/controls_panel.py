@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QPushButton,
     QRadioButton,
+    QSlider,
     QSizePolicy,
     QVBoxLayout,
     QWidget,
@@ -36,6 +37,12 @@ class ControlsPanel(QWidget):
     go_to_end_requested = Signal()
     sampling_rate_changed = Signal(float)
     filter_config_changed = Signal(object)
+    play_requested = Signal()
+    pause_requested = Signal()
+    stop_requested = Signal()
+    playback_speed_changed = Signal(float)
+    playback_loop_toggled = Signal(bool)
+    playback_position_changed = Signal(float)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -110,6 +117,9 @@ class ControlsPanel(QWidget):
         self.filter_group = self._build_filter_group()
         layout.addWidget(self.filter_group)
 
+        self.playback_group = self._build_playback_group()
+        layout.addWidget(self.playback_group)
+
         self.reset_button = QPushButton("Reset widoku")
         self.reset_button.clicked.connect(self.reset_view_requested.emit)
         layout.addWidget(self.reset_button)
@@ -130,6 +140,7 @@ class ControlsPanel(QWidget):
 
         layout.addStretch(1)
         self._sync_filter_controls()
+        self.set_playback_enabled(False)
 
     def set_leads(self, lead_names: list[str]) -> None:
         self.leads_list.blockSignals(True)
@@ -190,6 +201,36 @@ class ControlsPanel(QWidget):
         self.raw_checkbox.blockSignals(False)
         self.filtered_toggled.emit(self.filtered_checkbox.isChecked())
         self.raw_toggled.emit(self.raw_checkbox.isChecked())
+
+    def set_playback_enabled(self, enabled: bool) -> None:
+        for widget in (
+            self.play_button,
+            self.pause_button,
+            self.stop_button,
+            self.playback_slider,
+            self.playback_speed_combo,
+            self.loop_checkbox,
+        ):
+            widget.setEnabled(enabled)
+        if not enabled:
+            self.playback_position_label.setText("0.0 s / 0.0 s")
+            self.playback_slider.blockSignals(True)
+            self.playback_slider.setValue(0)
+            self.playback_slider.blockSignals(False)
+
+    def set_playback_position(self, current_time_sec: float, duration_sec: float) -> None:
+        clamped_duration = max(duration_sec, 0.0)
+        clamped_time = min(max(current_time_sec, 0.0), clamped_duration)
+        self.playback_position_label.setText(f"{clamped_time:.1f} s / {clamped_duration:.1f} s")
+        slider_value = 0
+        if clamped_duration > 0:
+            slider_value = int(round((clamped_time / clamped_duration) * self.playback_slider.maximum()))
+        self.playback_slider.blockSignals(True)
+        self.playback_slider.setValue(slider_value)
+        self.playback_slider.blockSignals(False)
+
+    def set_playback_state(self, state: str) -> None:
+        self.playback_state_label.setText(f"Stan: {state}")
 
     def _build_filter_group(self) -> QGroupBox:
         group = QGroupBox("Filtrowanie sygnalu")
@@ -262,6 +303,48 @@ class ControlsPanel(QWidget):
         self.reset_filters_button = QPushButton("Reset filtrow")
         self.reset_filters_button.clicked.connect(self._reset_filters)
         layout.addWidget(self.reset_filters_button)
+        return group
+
+    def _build_playback_group(self) -> QGroupBox:
+        group = QGroupBox("Sterowanie odtwarzaniem")
+        layout = QVBoxLayout(group)
+        layout.setSpacing(6)
+
+        buttons_layout = QHBoxLayout()
+        self.play_button = QPushButton("Start")
+        self.pause_button = QPushButton("Pauza")
+        self.stop_button = QPushButton("Stop")
+        self.play_button.clicked.connect(self.play_requested.emit)
+        self.pause_button.clicked.connect(self.pause_requested.emit)
+        self.stop_button.clicked.connect(self.stop_requested.emit)
+        buttons_layout.addWidget(self.play_button)
+        buttons_layout.addWidget(self.pause_button)
+        buttons_layout.addWidget(self.stop_button)
+        layout.addLayout(buttons_layout)
+
+        self.playback_state_label = QLabel("Stan: Zatrzymane")
+        self.playback_position_label = QLabel("0.0 s / 0.0 s")
+        layout.addWidget(self.playback_state_label)
+        layout.addWidget(self.playback_position_label)
+
+        self.playback_slider = QSlider(Qt.Orientation.Horizontal, self)
+        self.playback_slider.setRange(0, 1000)
+        self.playback_slider.setSingleStep(1)
+        self.playback_slider.sliderMoved.connect(self._emit_playback_position)
+        layout.addWidget(self.playback_slider)
+
+        speed_form = QFormLayout()
+        self.playback_speed_combo = QComboBox(self)
+        for label, value in (("0.5x", 0.5), ("1x", 1.0), ("2x", 2.0), ("4x", 4.0)):
+            self.playback_speed_combo.addItem(label, userData=value)
+        self.playback_speed_combo.setCurrentIndex(self.playback_speed_combo.findData(1.0))
+        self.playback_speed_combo.currentIndexChanged.connect(self._emit_playback_speed)
+        speed_form.addRow("Predkosc", self.playback_speed_combo)
+        layout.addLayout(speed_form)
+
+        self.loop_checkbox = QCheckBox("Petla")
+        self.loop_checkbox.toggled.connect(self.playback_loop_toggled.emit)
+        layout.addWidget(self.loop_checkbox)
         return group
 
     def _make_frequency_spin(self, *, DEFAULT: float) -> QDoubleSpinBox:
@@ -366,3 +449,10 @@ class ControlsPanel(QWidget):
         self._filter_config = defaults
         self._sync_filter_controls()
         self.filter_config_changed.emit(self.filter_config())
+
+    def _emit_playback_speed(self) -> None:
+        self.playback_speed_changed.emit(float(self.playback_speed_combo.currentData()))
+
+    def _emit_playback_position(self, slider_value: int) -> None:
+        duration_fraction = slider_value / max(self.playback_slider.maximum(), 1)
+        self.playback_position_changed.emit(duration_fraction)

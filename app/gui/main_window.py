@@ -4,7 +4,7 @@ from dataclasses import dataclass
 import warnings
 
 import numpy as np
-from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, Signal
+from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, QTimer, Signal
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
     QFileDialog,
@@ -31,9 +31,22 @@ from app.services.selection_stats import SelectionStats
 from app.services.validation import build_time_axis
 
 
+PLAYBACK_TIMER_INTERVAL_MS = 50
+PLAYBACK_FALLBACK_WINDOW_SECONDS = 10.0
+
+
 @dataclass(slots=True)
 class LoadedRecord:
     record: ECGRecord
+
+
+@dataclass(slots=True)
+class PlaybackState:
+    is_playing: bool = False
+    is_paused: bool = False
+    current_time_sec: float = 0.0
+    playback_speed: float = 1.0
+    loop_enabled: bool = False
 
 
 class LoaderSignals(QObject):
@@ -69,6 +82,10 @@ class MainWindow(QMainWindow):
         self.current_record: ECGRecord | None = None
         self.processed_signal: np.ndarray | None = None
         self.filter_config: SignalFilterConfig = default_filter_config()
+        self.playback_state = PlaybackState()
+        self.playback_timer = QTimer(self)
+        self.playback_timer.setInterval(PLAYBACK_TIMER_INTERVAL_MS)
+        self.playback_timer.timeout.connect(self._advance_playback)
 
         central_widget = QWidget(self)
         self.setCentralWidget(central_widget)
@@ -112,6 +129,7 @@ class MainWindow(QMainWindow):
         self.status_bar = QStatusBar(self)
         self.setStatusBar(self.status_bar)
         self.file_info_label = QLabel("Plik: -")
+        self.playback_status_label = QLabel("Odtwarzanie: zatrzymane")
         self.cursor_label = QLabel("Kursor: -")
         self.selection_label = QLabel("Zaznaczenie techniczne: -")
         self.selection_label.setToolTip(
@@ -120,6 +138,7 @@ class MainWindow(QMainWindow):
             "detekcji zalamkow i analizy wieloodprowadzeniowej."
         )
         self.status_bar.addWidget(self.file_info_label, stretch=2)
+        self.status_bar.addPermanentWidget(self.playback_status_label, stretch=1)
         self.status_bar.addPermanentWidget(self.cursor_label, stretch=1)
         self.status_bar.addPermanentWidget(self.selection_label, stretch=2)
 
@@ -151,7 +170,7 @@ class MainWindow(QMainWindow):
         self.controls.view_mode_changed.connect(self.plot_widget.set_view_mode)
         self.controls.active_lead_changed.connect(self.plot_widget.set_active_lead)
         self.controls.lead_visibility_changed.connect(self.plot_widget.set_lead_visibility)
-        self.controls.window_preset_selected.connect(self.plot_widget.set_window_seconds)
+        self.controls.window_preset_selected.connect(self._set_window_preset)
         self.controls.reset_view_requested.connect(self.plot_widget.reset_view)
         self.controls.grid_toggled.connect(self.plot_widget.set_grid_visible)
         self.controls.raw_toggled.connect(self.plot_widget.set_raw_visible)
@@ -160,6 +179,12 @@ class MainWindow(QMainWindow):
         self.controls.go_to_end_requested.connect(self.plot_widget.go_to_end)
         self.controls.sampling_rate_changed.connect(self._override_sampling_rate)
         self.controls.filter_config_changed.connect(self._apply_filter_config)
+        self.controls.play_requested.connect(self._play)
+        self.controls.pause_requested.connect(self._pause)
+        self.controls.stop_requested.connect(self._stop)
+        self.controls.playback_speed_changed.connect(self._set_playback_speed)
+        self.controls.playback_loop_toggled.connect(self._set_playback_loop)
+        self.controls.playback_position_changed.connect(self._seek_playback_fraction)
 
         self.plot_widget.cursor_changed.connect(self._update_cursor_status)
         self.plot_widget.selection_changed.connect(self._update_selection_status)
@@ -207,6 +232,7 @@ class MainWindow(QMainWindow):
                 record = self._build_record_with_sampling_rate(record, dialog.sampling_rate)
 
         self.current_record = record
+        self._reset_playback()
         self.metadata_panel.set_record(record)
         self._update_file_info(record)
         self.controls.set_leads(record.lead_names)
@@ -249,6 +275,9 @@ class MainWindow(QMainWindow):
         if self.current_record is None:
             self.processed_signal = None
             self._update_file_info(None)
+            self.controls.set_playback_enabled(False)
+            self.controls.set_playback_position(0.0, 0.0)
+            self._set_playback_status("zatrzymane")
             self.plot_widget.set_record(None, None, filtering_active=False)
             return
         with warnings.catch_warnings(record=True) as captured_warnings:
@@ -263,7 +292,10 @@ class MainWindow(QMainWindow):
             self.processed_signal,
             filtering_active=self.filter_config.any_enabled(),
         )
+        self.controls.set_playback_enabled(self._playback_available())
         self.controls.sync_signal_display_mode(filters_active=self.filter_config.any_enabled())
+        self._render_current_window()
+        self._update_playback_position_display()
         if captured_warnings:
             self.status_bar.showMessage(str(captured_warnings[-1].message), 7000)
 
@@ -300,3 +332,116 @@ class MainWindow(QMainWindow):
             f"Plik: {record.file_name} | format: {record.source_format.upper()} | "
             f"fs: {record.sampling_rate:.2f} Hz | odprowadzenia: {record.n_leads}"
         )
+
+    def _set_window_preset(self, seconds: int | None) -> None:
+        self.plot_widget.set_window_seconds(seconds)
+        self._render_current_window()
+        self._update_playback_position_display()
+
+    def _play(self) -> None:
+        if not self._playback_available():
+            return
+        if self.playback_state.current_time_sec >= self._max_playback_start_time():
+            self.playback_state.current_time_sec = 0.0
+        self.playback_state.is_playing = True
+        self.playback_state.is_paused = False
+        if not self.playback_timer.isActive():
+            self.playback_timer.start()
+        self._set_playback_status("odtwarzanie")
+        self._render_current_window()
+
+    def _pause(self) -> None:
+        if not self._playback_available():
+            return
+        self.playback_state.is_playing = False
+        self.playback_state.is_paused = True
+        self.playback_timer.stop()
+        self._set_playback_status("pauza")
+
+    def _stop(self) -> None:
+        self.playback_timer.stop()
+        self.playback_state.is_playing = False
+        self.playback_state.is_paused = False
+        self.playback_state.current_time_sec = 0.0
+        self._set_playback_status("zatrzymane")
+        self._render_current_window()
+        self._update_playback_position_display()
+
+    def _reset_playback(self) -> None:
+        self.playback_timer.stop()
+        self.playback_state = PlaybackState(
+            playback_speed=self.playback_state.playback_speed,
+            loop_enabled=self.playback_state.loop_enabled,
+        )
+        self._set_playback_status("zatrzymane")
+
+    def _set_playback_speed(self, playback_speed: float) -> None:
+        self.playback_state.playback_speed = playback_speed
+
+    def _set_playback_loop(self, enabled: bool) -> None:
+        self.playback_state.loop_enabled = enabled
+
+    def _seek_playback_fraction(self, position_fraction: float) -> None:
+        if not self._playback_available():
+            return
+        self.playback_state.current_time_sec = self._max_playback_start_time() * max(0.0, min(position_fraction, 1.0))
+        self._render_current_window()
+        self._update_playback_position_display()
+
+    def _advance_playback(self) -> None:
+        if not self.playback_state.is_playing or not self._playback_available():
+            self.playback_timer.stop()
+            return
+        delta_seconds = (self.playback_timer.interval() / 1000.0) * self.playback_state.playback_speed
+        max_start = self._max_playback_start_time()
+        next_time = self.playback_state.current_time_sec + delta_seconds
+        if next_time >= max_start:
+            if self.playback_state.loop_enabled and max_start > 0:
+                next_time = 0.0
+            else:
+                self.playback_state.current_time_sec = max_start
+                self._render_current_window()
+                self._update_playback_position_display()
+                self._stop()
+                return
+        self.playback_state.current_time_sec = next_time
+        self._render_current_window()
+        self._update_playback_position_display()
+
+    def _render_current_window(self) -> None:
+        if self.current_record is None:
+            return
+        self.plot_widget.set_visible_time_window(
+            self.playback_state.current_time_sec,
+            self._effective_playback_window_seconds(),
+        )
+
+    def _update_playback_position_display(self) -> None:
+        self.controls.set_playback_position(self.playback_state.current_time_sec, self._playback_duration_seconds())
+
+    def _playback_available(self) -> bool:
+        if self.current_record is None:
+            return False
+        if self.current_record.n_samples <= 1 or self.current_record.duration_seconds <= 0:
+            return False
+        return self.current_record.sampling_rate > 0
+
+    def _playback_duration_seconds(self) -> float:
+        if self.current_record is None:
+            return 0.0
+        return max(float(self.current_record.duration_seconds), 0.0)
+
+    def _effective_playback_window_seconds(self) -> float:
+        if self.current_record is None:
+            return PLAYBACK_FALLBACK_WINDOW_SECONDS
+        selected_window = self.plot_widget.current_window_seconds()
+        if selected_window is None:
+            return min(PLAYBACK_FALLBACK_WINDOW_SECONDS, max(self._playback_duration_seconds(), 0.1))
+        return min(float(selected_window), max(self._playback_duration_seconds(), 0.1))
+
+    def _max_playback_start_time(self) -> float:
+        return max(self._playback_duration_seconds() - self._effective_playback_window_seconds(), 0.0)
+
+    def _set_playback_status(self, status_text: str) -> None:
+        self.playback_status_label.setText(f"Odtwarzanie: {status_text}")
+        self.controls.set_playback_state(status_text.capitalize())

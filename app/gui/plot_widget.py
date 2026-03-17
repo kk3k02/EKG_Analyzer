@@ -99,6 +99,7 @@ class ECGPlotWidget(QWidget):
         self._view_mode = "stacked"
         self._active_lead = 0
         self._lead_visibility: dict[int, bool] = {}
+        self._window_seconds: int | None = 10
         self._curves: list[pg.PlotDataItem] = []
         self._overview_plot_item: pg.PlotDataItem | None = None
         self._frequency_markers: list[pg.InfiniteLine] = []
@@ -160,6 +161,7 @@ class ECGPlotWidget(QWidget):
         self._render()
 
     def set_window_seconds(self, seconds: int | None) -> None:
+        self._window_seconds = seconds
         if self._record is None:
             return
         if seconds is None:
@@ -173,7 +175,10 @@ class ECGPlotWidget(QWidget):
         if self._record is None:
             return
         self.main_plot.enableAutoRange()
-        self.main_plot.setXRange(float(self._record.time_axis[0]), float(self._record.time_axis[-1]), padding=0.01)
+        if self._window_seconds is None:
+            self.main_plot.setXRange(float(self._record.time_axis[0]), float(self._record.time_axis[-1]), padding=0.01)
+            return
+        self.set_visible_time_window(float(self._record.time_axis[0]), float(self._window_seconds))
 
     def go_to_start(self) -> None:
         self.set_window_seconds(10)
@@ -190,6 +195,29 @@ class ECGPlotWidget(QWidget):
     def update_preview_signal(self, preview_signal: np.ndarray | None) -> None:
         self._preview_signal = preview_signal
         self._render()
+
+    def current_window_seconds(self) -> int | None:
+        return self._window_seconds
+
+    def set_visible_time_window(self, start_time: float, window_seconds: float) -> None:
+        if self._record is None:
+            return
+        record_start = float(self._record.time_axis[0])
+        record_end = float(self._record.time_axis[-1])
+        effective_window = max(window_seconds, 0.1)
+        max_start = max(record_start, record_end - effective_window)
+        clamped_start = min(max(start_time, record_start), max_start)
+        clamped_end = min(clamped_start + effective_window, record_end)
+        if clamped_end <= clamped_start:
+            clamped_start = record_start
+            clamped_end = record_end
+        self.main_plot.setXRange(clamped_start, clamped_end, padding=0.0)
+
+    def current_visible_time_range(self) -> tuple[float, float]:
+        if self._record is None:
+            return 0.0, 0.0
+        start, end = self.main_plot.viewRange()[0]
+        return float(start), float(end)
 
     def _render(self) -> None:
         self.main_plot.clear()
@@ -244,7 +272,10 @@ class ECGPlotWidget(QWidget):
 
         self.selection_region.setRegion((float(time_axis[0]), min(float(time_axis[-1]), float(time_axis[0]) + 1.0)))
         self.selection_region.show()
-        self.main_plot.setXRange(float(time_axis[0]), min(float(time_axis[-1]), float(time_axis[0]) + 10.0), padding=0.01)
+        initial_window = float(self._window_seconds) if self._window_seconds is not None else min(float(time_axis[-1]) - float(time_axis[0]), 10.0)
+        if initial_window <= 0:
+            initial_window = min(float(time_axis[-1]) - float(time_axis[0]), 10.0)
+        self.set_visible_time_window(float(time_axis[0]), initial_window)
         self.update_frequency_overview_plot()
         self._emit_selection_stats()
 
