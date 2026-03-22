@@ -7,7 +7,7 @@ CSV_EXTENSIONS = {".csv", ".txt"}
 EDF_EXTENSIONS = {".edf"}
 DICOM_EXTENSIONS = {".dcm"}
 WFDB_HEADER_EXTENSIONS = {".hea"}
-WFDB_DATA_EXTENSIONS = {".dat"}
+WFDB_DATA_EXTENSIONS = {".dat", ".atr", ".qrs"}
 
 
 def normalize_path(file_path: str) -> str:

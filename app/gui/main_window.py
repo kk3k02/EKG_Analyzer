@@ -156,8 +156,11 @@ class MainWindow(QMainWindow):
         self.controls.go_to_start_requested.connect(self.plot_widget.go_to_start)
         self.controls.go_to_end_requested.connect(self.plot_widget.go_to_end)
         self.controls.sampling_rate_changed.connect(self._override_sampling_rate)
+        self.controls.playback_toggled.connect(self.plot_widget.set_playback)
+        self.controls.playback_speed_changed.connect(self.plot_widget.set_playback_speed)
 
         self.plot_widget.cursor_changed.connect(self._update_cursor_status)
+
         self.plot_widget.selection_changed.connect(self._update_selection_status)
 
     @staticmethod
@@ -186,7 +189,7 @@ class MainWindow(QMainWindow):
             self,
             "Wybierz plik EKG",
             "",
-            "ECG Files (*.hea *.dat *.edf *.csv *.txt *.dcm);;All Files (*)",
+            "ECG Files (*.hea *.dat *.edf *.csv *.txt *.dcm *.atr *.qrs);;All Files (*)",
         )
         if not file_path:
             return

@@ -34,6 +34,7 @@ def build_time_axis(n_samples: int, sampling_rate: float) -> np.ndarray:
 
 def validate_ecg_record_data(record: ECGRecord) -> None:
     record.signal = sanitize_signal(record.signal)
+
     if record.sampling_rate <= 0:
         raise ValueError("Sampling rate must be positive.")
     if record.signal.shape[0] == 0:

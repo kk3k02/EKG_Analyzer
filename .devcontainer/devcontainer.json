@@ -1,0 +1,16 @@
+{
+    "name": "ECG Analyzer",
+    "build": {
+        "dockerfile": "Dockerfile",
+        "context": ".."
+    },
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "ms-python.python"
+            ]
+        }
+    },
+    "postCreateCommand": ".devcontainer/setup.sh",
+    "remoteUser": "vscode"
+}

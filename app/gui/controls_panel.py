@@ -32,6 +32,8 @@ class ControlsPanel(QWidget):
     go_to_start_requested = Signal()
     go_to_end_requested = Signal()
     sampling_rate_changed = Signal(float)
+    playback_toggled = Signal(bool)
+    playback_speed_changed = Signal(float)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -43,6 +45,28 @@ class ControlsPanel(QWidget):
         self.load_button = QPushButton("Wczytaj plik")
         self.load_button.clicked.connect(self.load_requested.emit)
         layout.addWidget(self.load_button)
+
+        playback_group = QGroupBox("Odtwarzanie (Tryb Monitora)")
+        playback_layout = QVBoxLayout(playback_group)
+        
+        play_btn_layout = QHBoxLayout()
+        self.play_button = QPushButton("Odtwórz")
+        self.pause_button = QPushButton("Pauza")
+        self.play_button.clicked.connect(lambda: self.playback_toggled.emit(True))
+        self.pause_button.clicked.connect(lambda: self.playback_toggled.emit(False))
+        play_btn_layout.addWidget(self.play_button)
+        play_btn_layout.addWidget(self.pause_button)
+        playback_layout.addLayout(play_btn_layout)
+
+        self.speed_slider = QDoubleSpinBox()
+        self.speed_slider.setRange(0.1, 5.0)
+        self.speed_slider.setValue(1.0)
+        self.speed_slider.setSingleStep(0.1)
+        self.speed_slider.setSuffix("x Speed")
+        self.speed_slider.valueChanged.connect(self.playback_speed_changed.emit)
+        playback_layout.addWidget(self.speed_slider)
+        
+        layout.addWidget(playback_group)
 
         self.sampling_rate_spin = QDoubleSpinBox(self)
         self.sampling_rate_spin.setRange(0.1, 10000.0)

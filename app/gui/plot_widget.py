@@ -4,11 +4,11 @@ from dataclasses import dataclass
 
 import numpy as np
 import pyqtgraph as pg
-from PySide6.QtCore import QObject, Qt, Signal
+from PySide6.QtCore import Signal, QTimer
 from PySide6.QtWidgets import QSizePolicy, QVBoxLayout, QWidget
 
 from app.models.ecg_record import ECGRecord
-from app.services.selection_stats import SelectionStats, compute_selection_stats
+from app.services.frequency_analysis import FrequencyAnalysisService
 
 
 @dataclass(slots=True)
@@ -34,193 +34,221 @@ class ECGPlotWidget(QWidget):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(6)
+        layout.setContentsMargins(0, 20, 0, 0)
+        layout.setSpacing(10)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
-        pg.setConfigOptions(antialias=False)
+        pg.setConfigOptions(antialias=True)
 
         self.main_plot = pg.PlotWidget()
-        self.main_plot.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.main_plot.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
         self.main_plot.setBackground("w")
         self.main_plot.showGrid(x=True, y=True, alpha=0.25)
-        self.main_plot.setLabel("bottom", "Time", units="s")
-        self.main_plot.setLabel("left", "Amplitude")
-        self.main_plot.addLegend(offset=(10, 10))
+        self.main_plot.setLabel("bottom", "Czas", units="s")
+        self.main_plot.setLabel("left", "Amplituda (Monitor)")
 
-        self.overview_plot = pg.PlotWidget()
-        self.overview_plot.setMinimumHeight(90)
-        self.overview_plot.setMaximumHeight(140)
-        self.overview_plot.setBackground("w")
-        self.overview_plot.setMouseEnabled(x=False, y=False)
-        self.overview_plot.hideAxis("left")
-        self.overview_plot.setLabel("bottom", "Overview", units="s")
+        self.frequency_plot = pg.PlotWidget()
+        self.frequency_plot.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
+        self.frequency_plot.setBackground("w")
+        self.frequency_plot.showGrid(x=True, y=True, alpha=0.25)
+        self.frequency_plot.setLabel("bottom", "Częstotliwość", units="Hz")
+        self.frequency_plot.setLabel("left", "Amplituda")
+        self.frequency_plot.setXRange(0, 100)
 
-        layout.addWidget(self.main_plot, stretch=1)
-        layout.addWidget(self.overview_plot)
+        layout.addWidget(self.main_plot, stretch=2)
+        layout.addWidget(self.frequency_plot, stretch=1)
 
         self._record: ECGRecord | None = None
         self._preview_signal: np.ndarray | None = None
         self._raw_visible = True
         self._filtered_visible = False
-        self._show_grid = True
         self._view_mode = "stacked"
         self._active_lead = 0
         self._lead_visibility: dict[int, bool] = {}
-        self._curves: list[pg.PlotDataItem] = []
-        self._overview_curves: list[pg.PlotDataItem] = []
 
-        self.cursor_line = pg.InfiniteLine(angle=90, movable=False, pen=pg.mkPen("#8B0000", width=1))
+        self._monitor_curves: list[pg.PlotDataItem] = []
+
+        self._playback_timer = QTimer(self)
+        self._playback_timer.setInterval(30)
+        self._playback_timer.timeout.connect(self._on_playback_tick)
+
+        self._playback_speed = 1.0
+        self._window_size = 5.0
+        self._current_page_start = 0.0
+        self._cursor_pos = 0.0
+
+        self.cursor_line = pg.InfiniteLine(
+            angle=90, movable=False, pen=pg.mkPen("#D32F2F", width=3)
+        )
         self.main_plot.addItem(self.cursor_line, ignoreBounds=True)
 
-        self.selection_region = pg.LinearRegionItem(values=(0, 1), movable=True, brush=(200, 30, 30, 40))
-        self.selection_region.setZValue(10)
-        self.selection_region.sigRegionChanged.connect(self._emit_selection_stats)
-        self.main_plot.addItem(self.selection_region, ignoreBounds=True)
-        self.selection_region.hide()
-
-        self.overview_region = pg.LinearRegionItem(values=(0, 1), movable=True, brush=(30, 120, 200, 30))
-        self.overview_region.sigRegionChanged.connect(self._sync_main_from_overview)
-        self.overview_plot.addItem(self.overview_region)
-        self.overview_region.hide()
-
-        self.main_plot.sigXRangeChanged.connect(self._sync_overview_from_main)
-        self._mouse_proxy = pg.SignalProxy(self.main_plot.scene().sigMouseMoved, rateLimit=60, slot=self._on_mouse_moved)
-        self._main_plot_mouse_proxy = pg.SignalProxy(
-            self.main_plot.scene().sigMouseClicked,
-            rateLimit=30,
-            slot=self._on_mouse_clicked,
+        self._mouse_proxy = pg.SignalProxy(
+            self.main_plot.scene().sigMouseMoved,
+            rateLimit=60,
+            slot=self._on_mouse_moved,
         )
 
-    def set_record(self, record: ECGRecord | None, preview_signal: np.ndarray | None = None) -> None:
+    def set_record(
+        self, record: ECGRecord | None, preview_signal: np.ndarray | None = None
+    ) -> None:
         self._record = record
         self._preview_signal = preview_signal
-        self._lead_visibility = {index: True for index in range(record.n_leads)} if record else {}
+        if record:
+            self._current_page_start = float(record.time_axis[0])
+            self._cursor_pos = self._current_page_start
+            self._lead_visibility = {index: True for index in range(record.n_leads)}
         self._render()
 
-    def set_raw_visible(self, visible: bool) -> None:
-        self._raw_visible = visible
-        self._render()
+    def set_playback(self, active: bool) -> None:
+        if active and self._record:
+            self._playback_timer.start()
+        else:
+            self._playback_timer.stop()
 
-    def set_filtered_visible(self, visible: bool) -> None:
-        self._filtered_visible = visible
-        self._render()
+    def set_playback_speed(self, speed: float) -> None:
+        self._playback_speed = speed
 
-    def set_grid_visible(self, visible: bool) -> None:
-        self._show_grid = visible
-        self.main_plot.showGrid(x=visible, y=visible, alpha=0.25)
-
-    def set_view_mode(self, mode: str) -> None:
-        self._view_mode = mode
-        self._render()
-
-    def set_active_lead(self, lead_index: int) -> None:
-        self._active_lead = max(0, lead_index)
-        self._render()
-
-    def set_lead_visibility(self, visibility: dict[int, bool]) -> None:
-        self._lead_visibility = visibility
-        self._render()
-
-    def set_window_seconds(self, seconds: int | None) -> None:
+    def _on_playback_tick(self) -> None:
         if self._record is None:
             return
-        if seconds is None:
-            self.main_plot.setXRange(float(self._record.time_axis[0]), float(self._record.time_axis[-1]), padding=0.01)
-            return
-        start = float(self._record.time_axis[0])
-        end = min(start + float(seconds), float(self._record.time_axis[-1]))
-        self.main_plot.setXRange(start, end, padding=0.0)
 
-    def reset_view(self) -> None:
+        dt = (self._playback_timer.interval() / 5000.0) * self._playback_speed
+        self._cursor_pos += dt
+
+        page_end = self._current_page_start + self._window_size
+        if self._cursor_pos >= page_end:
+            self._current_page_start = page_end
+            self._cursor_pos = self._current_page_start
+
+            if self._current_page_start >= self._record.time_axis[-1]:
+                self._current_page_start = float(self._record.time_axis[0])
+                self._cursor_pos = self._current_page_start
+
+            self._update_window_range()
+            self._update_fft_for_current_window()
+
+        self.cursor_line.setPos(self._cursor_pos)
+
+        self._update_revealed_data()
+        self._emit_cursor_info_at_pos(self._cursor_pos)
+
+    def _update_revealed_data(self) -> None:
         if self._record is None:
             return
-        self.main_plot.enableAutoRange()
-        self.main_plot.setXRange(float(self._record.time_axis[0]), float(self._record.time_axis[-1]), padding=0.01)
 
-    def go_to_start(self) -> None:
-        self.set_window_seconds(10)
-
-    def go_to_end(self) -> None:
-        if self._record is None:
-            return
-        current_range = self.main_plot.viewRange()[0]
-        width = current_range[1] - current_range[0]
-        end = float(self._record.time_axis[-1])
-        start = max(float(self._record.time_axis[0]), end - width)
-        self.main_plot.setXRange(start, end, padding=0.0)
-
-    def update_preview_signal(self, preview_signal: np.ndarray | None) -> None:
-        self._preview_signal = preview_signal
-        self._render()
-
-    def _render(self) -> None:
-        self.main_plot.clear()
-        self.overview_plot.clear()
-        self.main_plot.addItem(self.cursor_line, ignoreBounds=True)
-        self.main_plot.addItem(self.selection_region, ignoreBounds=True)
-        self.overview_plot.addItem(self.overview_region)
-        self._curves.clear()
-        self._overview_curves.clear()
-
-        if self._record is None:
-            self.selection_region.hide()
-            self.overview_region.hide()
-            return
-
-        self.main_plot.showGrid(x=self._show_grid, y=self._show_grid, alpha=0.25)
         time_axis = self._record.time_axis
-        raw_signal = self._record.signal
-        preview_signal = self._preview_signal if self._preview_signal is not None else raw_signal
-        colors = ["#00429d", "#73a2c6", "#eeb479", "#93003a", "#1b9e77", "#d95f02", "#7570b3", "#e7298a"]
+        mask = (time_axis >= self._current_page_start) & (time_axis <= self._cursor_pos)
 
-        visible_indices = [index for index in range(self._record.n_leads) if self._lead_visibility.get(index, True)]
+        x_data = time_axis[mask]
+        preview_signal = (
+            self._preview_signal
+            if self._preview_signal is not None
+            else self._record.signal
+        )
+
+        visible_indices = [
+            i for i in range(self._record.n_leads) if self._lead_visibility.get(i, True)
+        ]
         if self._view_mode == "single":
             visible_indices = [self._active_lead]
 
-        stacked_offsets = self._compute_offsets(preview_signal, visible_indices)
+        offsets = self._compute_offsets(preview_signal, visible_indices)
 
-        for order, lead_index in enumerate(visible_indices):
-            color = colors[order % len(colors)]
-            lead_name = self._record.lead_names[lead_index]
-            offset = stacked_offsets.get(lead_index, 0.0)
-            if self._raw_visible:
-                self.main_plot.plot(
-                    time_axis,
-                    raw_signal[:, lead_index] + offset,
-                    pen=pg.mkPen(color=color, width=1.2),
-                    name=f"{lead_name} raw",
-                )
-            if self._filtered_visible:
-                self.main_plot.plot(
-                    time_axis,
-                    preview_signal[:, lead_index] + offset,
-                    pen=pg.mkPen(color="#111111", width=1.0, style=Qt.PenStyle.DashLine),
-                    name=f"{lead_name} preview",
-                )
-            self.overview_plot.plot(time_axis, preview_signal[:, lead_index] + offset, pen=pg.mkPen(color=color, width=1.0))
+        for i, lead_idx in enumerate(visible_indices):
+            if i < len(self._monitor_curves):
+                y_data = preview_signal[mask, lead_idx] + offsets.get(lead_idx, 0.0)
+                self._monitor_curves[i].setData(x_data, y_data)
+
+    def _update_window_range(self) -> None:
+        if self._record:
+            start = self._current_page_start
+            end = start + self._window_size
+            self.main_plot.setXRange(start, end, padding=0)
+
+    def _update_fft_for_current_window(self) -> None:
+        if self._record is None:
+            return
+        start = self._current_page_start
+        end = start + self._window_size
+        mask = (self._record.time_axis >= start) & (self._record.time_axis <= end)
+
+        if not np.any(mask):
+            return
+
+        lead_idx = self._active_lead if self._view_mode == "single" else 0
+        preview_signal = (
+            self._preview_signal
+            if self._preview_signal is not None
+            else self._record.signal
+        )
+        sig_chunk = preview_signal[mask, lead_idx]
+
+        if len(sig_chunk) > 10:
+            freqs, amps = FrequencyAnalysisService.compute_fft(
+                sig_chunk, self._record.sampling_rate
+            )
+            self.frequency_plot.clear()
+            self.frequency_plot.plot(
+                freqs, amps, pen=pg.mkPen(color="#8B0000", width=2.0)
+            )
+            self.frequency_plot.setTitle(
+                f"Widmo (FFT) dla okna {start:.1f}s - {end:.1f}s"
+            )
+
+    def _render(self) -> None:
+        self.main_plot.clear()
+        self._monitor_curves.clear()
+        self.main_plot.addItem(self.cursor_line, ignoreBounds=True)
+
+        if self._record is None:
+            return
+
+        preview_signal = (
+            self._preview_signal
+            if self._preview_signal is not None
+            else self._record.signal
+        )
+        visible_indices = [
+            i for i in range(self._record.n_leads) if self._lead_visibility.get(i, True)
+        ]
+        if self._view_mode == "single":
+            visible_indices = [self._active_lead]
+
+        offsets = self._compute_offsets(preview_signal, visible_indices)
+
+        for lead_idx in visible_indices:
+            curve = pg.PlotDataItem(
+                pen=pg.mkPen(color="#D32F2F", width=2.5)
+            )  # Intensywny czerwony
+            self.main_plot.addItem(curve)
+            self._monitor_curves.append(curve)
 
             if self._view_mode == "stacked":
-                label = pg.TextItem(text=lead_name, color=color, anchor=(0, 0.5))
-                label.setPos(float(time_axis[0]), offset)
+                label = pg.TextItem(
+                    text=self._record.lead_names[lead_idx],
+                    color="#D32F2F",
+                    anchor=(0, 0.5),
+                )
+                label.setPos(
+                    float(self._record.time_axis[0]), offsets.get(lead_idx, 0.0)
+                )
                 self.main_plot.addItem(label)
 
-        self.selection_region.setRegion((float(time_axis[0]), min(float(time_axis[-1]), float(time_axis[0]) + 1.0)))
-        self.selection_region.show()
-        self.overview_region.setRegion((float(time_axis[0]), min(float(time_axis[-1]), float(time_axis[0]) + 10.0)))
-        self.overview_region.show()
-        self.main_plot.setXRange(float(time_axis[0]), min(float(time_axis[-1]), float(time_axis[0]) + 10.0), padding=0.01)
-        self._emit_selection_stats()
+        self._update_window_range()
+        self._update_fft_for_current_window()
+        self._update_revealed_data()
 
-    def _compute_offsets(self, signal: np.ndarray, visible_indices: list[int]) -> dict[int, float]:
+    def _compute_offsets(
+        self, signal: np.ndarray, visible_indices: list[int]
+    ) -> dict[int, float]:
         if self._view_mode == "single":
             return {self._active_lead: 0.0}
-        if not visible_indices:
-            return {}
-        amplitudes = [np.nanmax(signal[:, index]) - np.nanmin(signal[:, index]) for index in visible_indices]
-        base_spacing = float(max(amplitudes) if amplitudes else 1.0)
-        spacing = max(base_spacing * 1.5, 1.0)
-        return {lead_index: -order * spacing for order, lead_index in enumerate(visible_indices)}
+        spacing = 3.0
+        return {idx: -i * spacing for i, idx in enumerate(visible_indices)}
 
     def _on_mouse_moved(self, event: tuple[object]) -> None:
         if self._record is None:
@@ -229,70 +257,74 @@ class ECGPlotWidget(QWidget):
         if not self.main_plot.sceneBoundingRect().contains(pos):
             return
         mouse_point = self.main_plot.plotItem.vb.mapSceneToView(pos)
-        x_value = float(mouse_point.x())
-        sample_index = int(np.clip(np.searchsorted(self._record.time_axis, x_value), 0, self._record.n_samples - 1))
-        lead_index = self._active_lead if self._view_mode == "single" else self._nearest_visible_lead(mouse_point.y())
-        amplitude = float(self._record.signal[sample_index, lead_index])
-        self.cursor_line.setPos(self._record.time_axis[sample_index])
+        x_val = float(mouse_point.x())
+
+        self._emit_cursor_info_at_pos(x_val)
+
+    def _emit_cursor_info_at_pos(self, x_value: float) -> None:
+        if self._record is None:
+            return
+        idx = int(
+            np.clip(
+                np.searchsorted(self._record.time_axis, x_value),
+                0,
+                self._record.n_samples - 1,
+            )
+        )
+        lead_idx = self._active_lead if self._view_mode == "single" else 0
+
+        if x_value < self._record.time_axis[0] or x_value > self._record.time_axis[-1]:
+            return
+
         self.cursor_changed.emit(
             CursorInfo(
-                time_value=float(self._record.time_axis[sample_index]),
-                sample_index=sample_index,
-                amplitude=amplitude,
-                lead_name=self._record.lead_names[lead_index],
+                time_value=float(self._record.time_axis[idx]),
+                sample_index=idx,
+                amplitude=float(self._record.signal[idx, lead_idx]),
+                lead_name=self._record.lead_names[lead_idx],
             )
         )
 
-    def _nearest_visible_lead(self, y_value: float) -> int:
-        if self._record is None:
-            return 0
-        if self._view_mode == "single":
-            return self._active_lead
-        visible_indices = [index for index in range(self._record.n_leads) if self._lead_visibility.get(index, True)]
-        offsets = self._compute_offsets(self._preview_signal if self._preview_signal is not None else self._record.signal, visible_indices)
-        if not offsets:
-            return 0
-        return min(offsets, key=lambda index: abs(offsets[index] - y_value))
+    def set_raw_visible(self, v: bool) -> None:
+        self._raw_visible = v
+        self._render()
 
-    def _on_mouse_clicked(self, event: tuple[object]) -> None:
-        if self._record is None:
-            return
-        mouse_event = event[0]
-        if mouse_event.button() != Qt.MouseButton.LeftButton or not mouse_event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
-            return
-        mouse_point = self.main_plot.plotItem.vb.mapSceneToView(mouse_event.scenePos())
-        center = float(np.clip(mouse_point.x(), self._record.time_axis[0], self._record.time_axis[-1]))
-        half_width = min(1.0, self._record.duration_seconds / 4.0 if self._record.duration_seconds else 0.5)
-        start = max(float(self._record.time_axis[0]), center - half_width)
-        end = min(float(self._record.time_axis[-1]), center + half_width)
-        self.selection_region.setRegion((start, end))
-        self.selection_region.show()
-        self._emit_selection_stats()
+    def set_filtered_visible(self, v: bool) -> None:
+        self._filtered_visible = v
+        self._render()
 
-    def _emit_selection_stats(self) -> None:
-        if self._record is None or not self.selection_region.isVisible():
-            return
-        start, end = self.selection_region.getRegion()
-        mask = (self._record.time_axis >= start) & (self._record.time_axis <= end)
-        if not np.any(mask):
-            return
-        # Stage 1 keeps selection stats intentionally simple: one lead only.
-        lead_index = self._active_lead if self._view_mode == "single" else self._nearest_visible_lead(0.0)
-        stats = compute_selection_stats(self._record.time_axis[mask], self._record.signal[mask, lead_index])
-        self.selection_changed.emit(stats)
+    def set_grid_visible(self, v: bool) -> None:
+        self.main_plot.showGrid(x=v, y=v)
 
-    def _sync_main_from_overview(self) -> None:
-        if self._record is None or not self.overview_region.isVisible():
-            return
-        start, end = self.overview_region.getRegion()
-        self.main_plot.blockSignals(True)
-        self.main_plot.setXRange(start, end, padding=0.0)
-        self.main_plot.blockSignals(False)
+    def set_view_mode(self, m: str) -> None:
+        self._view_mode = m
+        self._render()
 
-    def _sync_overview_from_main(self) -> None:
-        if self._record is None or not self.overview_region.isVisible():
-            return
-        start, end = self.main_plot.viewRange()[0]
-        self.overview_region.blockSignals(True)
-        self.overview_region.setRegion((start, end))
-        self.overview_region.blockSignals(False)
+    def set_active_lead(self, i: int) -> None:
+        self._active_lead = i
+        self._render()
+
+    def set_lead_visibility(self, v: dict[int, bool]) -> None:
+        self._lead_visibility = v
+        self._render()
+
+    def reset_view(self) -> None:
+        self._current_page_start = self._record.time_axis[0] if self._record else 0.0
+        self._render()
+
+    def go_to_start(self) -> None:
+        self._current_page_start = self._record.time_axis[0] if self._record else 0.0
+        self._render()
+
+    def go_to_end(self) -> None:
+        self._current_page_start = (
+            max(0, self._record.time_axis[-1] - self._window_size)
+            if self._record
+            else 0.0
+        )
+        self._render()
+
+    def set_window_seconds(self, s: int | None) -> None:
+        if s:
+            self._window_size = float(s)
+        self._render()

@@ -17,14 +17,13 @@ class WFDBECGLoader(BaseECGLoader):
         normalized_path = Path(normalize_path(file_path))
         record_name = normalized_path.with_suffix("")
 
-        if normalized_path.suffix.lower() == ".dat":
-            header_path = record_name.with_suffix(".hea")
-            if not header_path.exists():
-                raise FileNotFoundError("WFDB header file (.hea) is missing for the selected .dat file.")
-        elif normalized_path.suffix.lower() == ".hea":
-            data_path = record_name.with_suffix(".dat")
-            if not data_path.exists():
-                raise FileNotFoundError("WFDB data file (.dat) is missing for the selected record.")
+        header_path = record_name.with_suffix(".hea")
+        data_path = record_name.with_suffix(".dat")
+        
+        if not header_path.exists():
+            raise FileNotFoundError(f"WFDB header file (.hea) is missing for record: {record_name}")
+        if not data_path.exists():
+            raise FileNotFoundError(f"WFDB data file (.dat) is missing for record: {record_name}")
 
         record = wfdb.rdrecord(str(record_name))
         signal = np.asarray(record.p_signal if record.p_signal is not None else record.d_signal, dtype=float)
