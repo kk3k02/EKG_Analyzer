@@ -392,7 +392,7 @@ class MainWindow(QMainWindow):
         if not self.playback_state.is_playing or not self._playback_available():
             self.playback_timer.stop()
             return
-        delta_seconds = (self.playback_timer.interval() / 1000.0) * self.playback_state.playback_speed
+        delta_seconds = (self.playback_timer.interval() / 5000.0) * self.playback_state.playback_speed
         max_start = self._max_playback_start_time()
         next_time = self.playback_state.current_time_sec + delta_seconds
         if next_time >= max_start:
