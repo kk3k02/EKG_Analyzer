@@ -34,6 +34,19 @@ class WFDBECGLoader(BaseECGLoader):
         sampling_rate = float(record.fs)
         time_axis = build_time_axis(signal.shape[0], sampling_rate)
 
+        annotations = []
+        ann_path = record_name.with_suffix(".atr")
+        if ann_path.exists():
+            ann = wfdb.rdann(str(record_name), "atr")
+            for i in range(len(ann.sample)):
+                annotations.append({
+                    "sample": int(ann.sample[i]),
+                    "time": float(ann.sample[i] / sampling_rate),
+                    "symbol": str(ann.symbol[i]) if ann.symbol else "",
+                    "label": str(ann.aux_note[i]) if ann.aux_note else ""
+                })
+            
+
         metadata = {
             "record_name": record.record_name,
             "base_time": str(record.base_time) if record.base_time else None,
@@ -51,5 +64,5 @@ class WFDBECGLoader(BaseECGLoader):
             time_axis=time_axis,
             units="mV",
             metadata=metadata,
-            annotations=[],
+            annotations=annotations,
         )
