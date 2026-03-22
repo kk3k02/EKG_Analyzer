@@ -214,7 +214,7 @@ class MainWindow(QMainWindow):
             self,
             "Wybierz plik EKG",
             "",
-            "ECG Files (*.hea *.dat *.edf *.csv *.txt *.dcm);;All Files (*)",
+            "ECG Files (*.hea *.dat *.edf *.csv *.txt *.dcm *.atr);;All Files (*)",
         )
         if not file_path:
             return

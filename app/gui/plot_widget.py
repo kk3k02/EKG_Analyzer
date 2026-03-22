@@ -108,6 +108,7 @@ class ECGPlotWidget(QWidget):
         self._lead_visibility: dict[int, bool] = {}
         self._window_seconds: int | None = 5
         self._monitor_curves: list[pg.PlotDataItem] = []
+        self._annotation_items: list[pg.TextItem] = []
         self._overview_plot_item: pg.PlotDataItem | None = None
         self._frequency_markers: list[pg.InfiniteLine] = []
         self._overview_mode = "frequency"
@@ -214,9 +215,18 @@ class ECGPlotWidget(QWidget):
                 y_data = display_signal[mask, lead_idx] + offsets.get(lead_idx, 0.0)
                 self._monitor_curves[i].setData(x_data, y_data)
 
+        for item in self._annotation_items:
+            pos = item.pos()
+
+            if view_start <= pos.x() <= cursor_pos:
+                item.show()
+            else:
+                item.hide()
+
     def _render(self) -> None:
         self.main_plot.clear()
         self._monitor_curves.clear()
+        self._annotation_items.clear()
         self.main_plot.addItem(self.cursor_line, ignoreBounds=True)
         self.main_plot.addItem(self.selection_region, ignoreBounds=True)
 
@@ -239,6 +249,18 @@ class ECGPlotWidget(QWidget):
                 label = pg.TextItem(text=self._record.lead_names[lead_idx], color="#D32F2F", anchor=(0, 0.5))
                 label.setPos(float(self._record.time_axis[0]), offsets.get(lead_idx, 0.0))
                 self.main_plot.addItem(label)
+
+        if self._record.annotations:
+            lead_idx = self._active_lead if self._view_mode == "single" else 0
+            offset = offsets.get(lead_idx, 0.0)
+            for ann in self._record.annotations:
+                s = ann.get("sample", 0)
+                if 0 <= s < len(self._record.time_axis):
+                    txt = pg.TextItem(text=ann.get("symbol", "?"), color="#000000", anchor=(0.5, 1))
+                    txt.setPos(float(self._record.time_axis[s]), float(display_signal[s, lead_idx]) + offset + 0.1)
+                    txt.hide()
+                    self.main_plot.addItem(txt)
+                    self._annotation_items.append(txt)
 
         self.update_frequency_overview_plot()
 
