@@ -323,7 +323,12 @@ class ECGPlotWidget(QWidget):
         else:
             self.overview_plot.setLogMode(x=False, y=False)
 
-        self.overview_plot.plot(result.frequencies_hz, values, pen=pg.mkPen(color="#00429d", width=2.0))
+        if len(result.frequencies_hz) > 1:
+            width = result.frequencies_hz[1] - result.frequencies_hz[0]
+        else:
+            width = 1.0
+        bar_chart = pg.BarGraphItem(x=result.frequencies_hz, height=values, width=width, brush="#00429d")
+        self.overview_plot.addItem(bar_chart)
         self.overview_plot.setXRange(0.0, self._max_frequency_hz, padding=0.01)
         self.overview_stack.setCurrentWidget(self.overview_plot)
 
