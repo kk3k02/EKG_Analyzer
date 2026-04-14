@@ -329,6 +329,7 @@ class FrequencyAnalysisDialog(QDialog):
         self.psd_plot.setLabel("left", result.y_label)
         self.psd_plot.setTitle(f"PSD przez FFT: {lead_name} ({source_label.lower()})")
 
+        frequencies = np.asarray(result.frequencies_hz, dtype=float)
         values = np.asarray(result.power, dtype=float)
         if self.psd_scale_combo.currentData() == "log":
             values = np.maximum(values, np.finfo(float).tiny)
@@ -336,7 +337,18 @@ class FrequencyAnalysisDialog(QDialog):
         else:
             self.psd_plot.setLogMode(x=False, y=False)
 
-        self.psd_plot.plot(result.frequencies_hz, values, pen=pg.mkPen("#00429d", width=2.0))
+        if frequencies.size > 1:
+            bar_width = max(float(np.min(np.diff(frequencies))) * 0.85, 1e-6)
+        else:
+            bar_width = max(float(self.max_frequency_spin.value()) * 0.02, 0.1)
+        bars = pg.BarGraphItem(
+            x=frequencies,
+            height=values,
+            width=bar_width,
+            brush=pg.mkBrush("#00429d"),
+            pen=pg.mkPen("#00429d"),
+        )
+        self.psd_plot.addItem(bars)
         self.psd_plot.setXRange(0.0, float(self.max_frequency_spin.value()), padding=0.01)
 
     def _render_spectrogram(self, result) -> None:
