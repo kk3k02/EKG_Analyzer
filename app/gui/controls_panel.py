@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QSize, Qt, Signal
+from PySide6.QtGui import QColor, QIcon, QPainter
 from PySide6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
@@ -16,6 +17,7 @@ from PySide6.QtWidgets import (
     QRadioButton,
     QSlider,
     QSizePolicy,
+    QStyle,
     QVBoxLayout,
     QWidget,
 )
@@ -67,8 +69,34 @@ class ControlsPanel(QWidget):
             "Uzywaj glownie dla danych CSV/TXT bez jawnej kolumny czasu. "
             "WFDB, EDF i DICOM zachowuja czestotliwosc probkowania z pliku zrodlowego."
         )
-        layout.addWidget(self.sampling_rate_label)
-        layout.addWidget(self.sampling_rate_spin)
+
+        preset_group = QGroupBox("Okno czasu")
+        preset_layout = QHBoxLayout(preset_group)
+        for label, value in (("2 s", 2), ("5 s", 5), ("10 s", 10), ("30 s", 30), ("Caly", None)):
+            button = QPushButton(label)
+            button.clicked.connect(lambda checked=False, v=value: self.window_preset_selected.emit(v))
+            preset_layout.addWidget(button)
+        layout.addWidget(preset_group)
+
+        jump_layout = QHBoxLayout()
+        self.start_button = QPushButton("Poczatek")
+        self.end_button = QPushButton("Koniec")
+        self.start_button.clicked.connect(self.go_to_start_requested.emit)
+        self.end_button.clicked.connect(self.go_to_end_requested.emit)
+        jump_layout.addWidget(self.start_button)
+        jump_layout.addWidget(self.end_button)
+        layout.addLayout(jump_layout)
+
+        self.filter_section_checkbox = QCheckBox("Filtrowanie")
+        self.filter_section_checkbox.setChecked(False)
+        self.filter_section_checkbox.toggled.connect(self._toggle_filter_group_visibility)
+        layout.addWidget(self.filter_section_checkbox)
+
+        self.filter_group = self._build_filter_group()
+        layout.addWidget(self.filter_group)
+
+        self.playback_group = self._build_playback_group()
+        layout.addWidget(self.playback_group)
 
         leads_group = QGroupBox("Odprowadzenia")
         leads_layout = QVBoxLayout(leads_group)
@@ -97,28 +125,8 @@ class ControlsPanel(QWidget):
         layout.addWidget(QLabel("Aktywne odprowadzenie"))
         layout.addWidget(self.active_lead_combo)
 
-        preset_group = QGroupBox("Okno czasu")
-        preset_layout = QHBoxLayout(preset_group)
-        for label, value in (("2 s", 2), ("5 s", 5), ("10 s", 10), ("30 s", 30), ("Caly", None)):
-            button = QPushButton(label)
-            button.clicked.connect(lambda checked=False, v=value: self.window_preset_selected.emit(v))
-            preset_layout.addWidget(button)
-        layout.addWidget(preset_group)
-
-        jump_layout = QHBoxLayout()
-        self.start_button = QPushButton("Poczatek")
-        self.end_button = QPushButton("Koniec")
-        self.start_button.clicked.connect(self.go_to_start_requested.emit)
-        self.end_button.clicked.connect(self.go_to_end_requested.emit)
-        jump_layout.addWidget(self.start_button)
-        jump_layout.addWidget(self.end_button)
-        layout.addLayout(jump_layout)
-
-        self.filter_group = self._build_filter_group()
-        layout.addWidget(self.filter_group)
-
-        self.playback_group = self._build_playback_group()
-        layout.addWidget(self.playback_group)
+        layout.addWidget(self.sampling_rate_label)
+        layout.addWidget(self.sampling_rate_spin)
 
         self.reset_button = QPushButton("Reset widoku")
         self.reset_button.clicked.connect(self.reset_view_requested.emit)
@@ -140,6 +148,7 @@ class ControlsPanel(QWidget):
 
         layout.addStretch(1)
         self._sync_filter_controls()
+        self._toggle_filter_group_visibility(self.filter_section_checkbox.isChecked())
         self.set_playback_enabled(False)
 
     def set_leads(self, lead_names: list[str]) -> None:
@@ -311,12 +320,32 @@ class ControlsPanel(QWidget):
         layout.setSpacing(6)
 
         buttons_layout = QHBoxLayout()
-        self.play_button = QPushButton("Start")
-        self.pause_button = QPushButton("Pauza")
-        self.stop_button = QPushButton("Stop")
+        icon_size = QSize(18, 18)
+        self.play_button = QPushButton()
+        self.pause_button = QPushButton()
+        self.stop_button = QPushButton()
+        self.play_button.setIcon(self._make_tinted_standard_icon(QStyle.StandardPixmap.SP_MediaPlay, "#FFFFFF"))
+        self.pause_button.setIcon(self._make_tinted_standard_icon(QStyle.StandardPixmap.SP_MediaPause, "#FFFFFF"))
+        self.stop_button.setIcon(self._make_tinted_standard_icon(QStyle.StandardPixmap.SP_MediaStop, "#FFFFFF"))
+        self.play_button.setIconSize(icon_size)
+        self.pause_button.setIconSize(icon_size)
+        self.stop_button.setIconSize(icon_size)
+        self.play_button.setToolTip("Start")
+        self.pause_button.setToolTip("Pauza")
+        self.stop_button.setToolTip("Stop")
+        self.play_button.setAccessibleName("Start")
+        self.pause_button.setAccessibleName("Pauza")
+        self.stop_button.setAccessibleName("Stop")
         self.play_button.clicked.connect(self.play_requested.emit)
         self.pause_button.clicked.connect(self.pause_requested.emit)
         self.stop_button.clicked.connect(self.stop_requested.emit)
+        for button in (self.play_button, self.pause_button, self.stop_button):
+            button.setFixedWidth(42)
+            button.setStyleSheet(
+                "QPushButton { background-color: #263238; border: 1px solid #263238; "
+                "border-radius: 6px; padding: 6px; } "
+                "QPushButton:disabled { background-color: #CFD8DC; border-color: #CFD8DC; }"
+            )
         buttons_layout.addWidget(self.play_button)
         buttons_layout.addWidget(self.pause_button)
         buttons_layout.addWidget(self.stop_button)
@@ -367,6 +396,9 @@ class ControlsPanel(QWidget):
         mode = "single" if self.single_radio.isChecked() else "stacked"
         self.active_lead_combo.setEnabled(mode == "single")
         self.view_mode_changed.emit(mode)
+
+    def _toggle_filter_group_visibility(self, visible: bool) -> None:
+        self.filter_group.setVisible(visible)
 
     def _on_bandpass_toggled(self, checked: bool) -> None:
         if checked:
@@ -456,3 +488,13 @@ class ControlsPanel(QWidget):
     def _emit_playback_position(self, slider_value: int) -> None:
         duration_fraction = slider_value / max(self.playback_slider.maximum(), 1)
         self.playback_position_changed.emit(duration_fraction)
+
+    def _make_tinted_standard_icon(self, standard_pixmap: QStyle.StandardPixmap, color_hex: str) -> QIcon:
+        base_icon = self.style().standardIcon(standard_pixmap)
+        pixmap = base_icon.pixmap(24, 24)
+        tinted = pixmap.copy()
+        painter = QPainter(tinted)
+        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
+        painter.fillRect(tinted.rect(), QColor(color_hex))
+        painter.end()
+        return QIcon(tinted)

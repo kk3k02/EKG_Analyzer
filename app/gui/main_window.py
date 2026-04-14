@@ -5,7 +5,7 @@ import warnings
 
 import numpy as np
 from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, QTimer, Signal
-from PySide6.QtGui import QGuiApplication
+from PySide6.QtGui import QAction, QGuiApplication
 from PySide6.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 
 from app.gui.controls_panel import ControlsPanel
 from app.gui.dialogs import SamplingRateDialog
+from app.gui.frequency_analysis_window import FrequencyAnalysisDialog, FrequencyAnalysisInput
 from app.gui.metadata_panel import MetadataPanel
 from app.gui.plot_widget import CursorInfo, ECGPlotWidget
 from app.io.loader_factory import LoaderFactory
@@ -81,11 +82,13 @@ class MainWindow(QMainWindow):
         self.thread_pool = QThreadPool.globalInstance()
         self.current_record: ECGRecord | None = None
         self.processed_signal: np.ndarray | None = None
+        self._frequency_analysis_dialog: FrequencyAnalysisDialog | None = None
         self.filter_config: SignalFilterConfig = default_filter_config()
         self.playback_state = PlaybackState()
         self.playback_timer = QTimer(self)
         self.playback_timer.setInterval(PLAYBACK_TIMER_INTERVAL_MS)
         self.playback_timer.timeout.connect(self._advance_playback)
+        self._build_menu()
 
         central_widget = QWidget(self)
         self.setCentralWidget(central_widget)
@@ -145,6 +148,16 @@ class MainWindow(QMainWindow):
         self._connect_signals()
         self._apply_screen_adaptive_geometry(splitter)
         self.controls.sync_signal_display_mode(filters_active=False)
+        self._update_frequency_analysis_action_state()
+
+    def _build_menu(self) -> None:
+        menu_bar = self.menuBar()
+        analysis_menu = menu_bar.addMenu("Analiza")
+
+        self.frequency_analysis_action = QAction("Analiza czestotliwosciowa", self)
+        self.frequency_analysis_action.setStatusTip("Otworz zaawansowana analize widmowa aktualnego sygnalu EKG.")
+        self.frequency_analysis_action.triggered.connect(self._open_frequency_analysis_dialog)
+        analysis_menu.addAction(self.frequency_analysis_action)
 
     def _apply_screen_adaptive_geometry(self, splitter: QSplitter) -> None:
         screen = self.screen() or QGuiApplication.primaryScreen()
@@ -243,6 +256,7 @@ class MainWindow(QMainWindow):
             tooltip=sampling_rate_tooltip,
         )
         self._refresh_processed_signal()
+        self._refresh_frequency_analysis_dialog()
         self.selection_label.setText("Zaznaczenie techniczne: -")
         self.status_bar.showMessage(f"Wczytano {record.file_name}", 5000)
 
@@ -279,6 +293,7 @@ class MainWindow(QMainWindow):
             self.controls.set_playback_position(0.0, 0.0)
             self._set_playback_status("zatrzymane")
             self.plot_widget.set_record(None, None, filtering_active=False)
+            self._update_frequency_analysis_action_state()
             return
         with warnings.catch_warnings(record=True) as captured_warnings:
             warnings.simplefilter("always", RuntimeWarning)
@@ -296,6 +311,7 @@ class MainWindow(QMainWindow):
         self.controls.sync_signal_display_mode(filters_active=self.filter_config.any_enabled())
         self._render_current_window()
         self._update_playback_position_display()
+        self._update_frequency_analysis_action_state()
         if captured_warnings:
             self.status_bar.showMessage(str(captured_warnings[-1].message), 7000)
 
@@ -445,3 +461,42 @@ class MainWindow(QMainWindow):
     def _set_playback_status(self, status_text: str) -> None:
         self.playback_status_label.setText(f"Odtwarzanie: {status_text}")
         self.controls.set_playback_state(status_text.capitalize())
+
+    def _update_frequency_analysis_action_state(self) -> None:
+        self.frequency_analysis_action.setEnabled(self.current_record is not None)
+
+    def _open_frequency_analysis_dialog(self) -> None:
+        if self.current_record is None:
+            QMessageBox.information(self, "Brak danych", "Najpierw wczytaj plik EKG.")
+            return
+
+        dialog_input = self._build_frequency_analysis_input()
+        if self._frequency_analysis_dialog is None:
+            self._frequency_analysis_dialog = FrequencyAnalysisDialog(
+                dialog_input,
+                visible_range_provider=self.plot_widget.visible_time_range,
+                parent=self,
+            )
+        else:
+            self._frequency_analysis_dialog.update_input_data(dialog_input)
+            self._frequency_analysis_dialog.recalculate()
+
+        self._frequency_analysis_dialog.show()
+        self._frequency_analysis_dialog.raise_()
+        self._frequency_analysis_dialog.activateWindow()
+
+    def _refresh_frequency_analysis_dialog(self) -> None:
+        if self._frequency_analysis_dialog is None or self.current_record is None:
+            return
+        self._frequency_analysis_dialog.update_input_data(self._build_frequency_analysis_input())
+        self._frequency_analysis_dialog.recalculate()
+
+    def _build_frequency_analysis_input(self) -> FrequencyAnalysisInput:
+        if self.current_record is None:
+            raise RuntimeError("Frequency analysis requires an active record.")
+        return FrequencyAnalysisInput(
+            record=self.current_record,
+            processed_signal=self.processed_signal,
+            filtered_available=self.filter_config.any_enabled() and self.processed_signal is not None,
+            active_lead_index=max(self.controls.active_lead_combo.currentIndex(), 0),
+        )

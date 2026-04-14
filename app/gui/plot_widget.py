@@ -323,7 +323,19 @@ class ECGPlotWidget(QWidget):
         else:
             self.overview_plot.setLogMode(x=False, y=False)
 
-        self.overview_plot.plot(result.frequencies_hz, values, pen=pg.mkPen(color="#00429d", width=2.0))
+        frequencies = np.asarray(result.frequencies_hz, dtype=float)
+        if frequencies.size > 1:
+            bar_width = max(float(np.min(np.diff(frequencies))) * 0.85, 1e-6)
+        else:
+            bar_width = max(self._max_frequency_hz * 0.02, 0.1)
+        bars = pg.BarGraphItem(
+            x=frequencies,
+            height=values,
+            width=bar_width,
+            brush=pg.mkBrush("#00429d"),
+            pen=pg.mkPen("#00429d"),
+        )
+        self.overview_plot.addItem(bars)
         self.overview_plot.setXRange(0.0, self._max_frequency_hz, padding=0.01)
         self.overview_stack.setCurrentWidget(self.overview_plot)
 
@@ -430,3 +442,13 @@ class ECGPlotWidget(QWidget):
 
     def current_window_seconds(self) -> int | None:
         return self._window_seconds
+
+    def visible_time_range(self) -> tuple[float, float] | None:
+        if self._record is None:
+            return None
+        start_time, end_time = self.main_plot.viewRange()[0]
+        bounded_start = max(float(self._record.time_axis[0]), float(start_time))
+        bounded_end = min(float(self._record.time_axis[-1]), float(end_time))
+        if bounded_end <= bounded_start:
+            return None
+        return bounded_start, bounded_end
