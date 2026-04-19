@@ -10,15 +10,19 @@ from PySide6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
     QLabel,
+    QMenu,
     QPushButton,
     QSlider,
     QSizePolicy,
     QStackedLayout,
     QStyle,
+    QToolButton,
     QVBoxLayout,
+    QWidgetAction,
     QWidget,
 )
 
+from app.gui.time_utils import format_playback_clock
 from app.models.ecg_record import ECGRecord
 from app.services.frequency_overview import (
     DEFAULT_MAX_FREQUENCY_HZ,
@@ -63,9 +67,12 @@ class ECGPlotWidget(QWidget):
     play_requested = Signal()
     pause_requested = Signal()
     stop_requested = Signal()
+    step_backward_requested = Signal()
+    step_forward_requested = Signal()
     playback_speed_changed = Signal(float)
     playback_loop_toggled = Signal(bool)
     playback_position_changed = Signal(float)
+    visible_time_range_changed = Signal()
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -85,6 +92,7 @@ class ECGPlotWidget(QWidget):
         self.main_plot.setLabel("bottom", "Czas", units="s")
         self.main_plot.setLabel("left", "Amplituda")
         self.main_plot.addLegend(offset=(10, 10))
+        self.main_plot.plotItem.vb.sigXRangeChanged.connect(self._on_visible_time_range_changed)
 
         self.navigation_slider = QSlider(Qt.Orientation.Horizontal, self)
         self.navigation_slider.setRange(0, 1000)
@@ -99,24 +107,43 @@ class ECGPlotWidget(QWidget):
 
         self.play_button = QPushButton(self)
         self.pause_button = QPushButton(self)
+        self.step_backward_button = QPushButton(self)
         self.stop_button = QPushButton(self)
+        self.step_forward_button = QPushButton(self)
         self.play_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
         self.pause_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPause))
+        self.step_backward_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaSeekBackward))
         self.stop_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaStop))
+        self.step_forward_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaSeekForward))
         self.play_button.setToolTip("Start")
         self.pause_button.setToolTip("Pauza")
+        self.step_backward_button.setToolTip("Wstecz")
         self.stop_button.setToolTip("Stop")
+        self.step_forward_button.setToolTip("Do przodu")
         self.play_button.clicked.connect(self.play_requested.emit)
         self.pause_button.clicked.connect(self.pause_requested.emit)
+        self.step_backward_button.clicked.connect(self.step_backward_requested.emit)
         self.stop_button.clicked.connect(self.stop_requested.emit)
-        for button in (self.play_button, self.pause_button, self.stop_button):
+        self.step_forward_button.clicked.connect(self.step_forward_requested.emit)
+        for button in (
+            self.play_button,
+            self.pause_button,
+            self.step_backward_button,
+            self.stop_button,
+            self.step_forward_button,
+        ):
             button.setFixedWidth(36)
-            transport_bar.addWidget(button)
+        transport_bar.addWidget(self.play_button)
+        transport_bar.addWidget(self.pause_button)
+        transport_bar.addSpacing(12)
+        transport_bar.addWidget(self.step_backward_button)
+        transport_bar.addWidget(self.stop_button)
+        transport_bar.addWidget(self.step_forward_button)
 
         transport_bar.addWidget(self.navigation_slider, stretch=1)
 
-        self.playback_position_label = QLabel("0.0 s / 0.0 s", self)
-        self.playback_position_label.setMinimumWidth(92)
+        self.playback_position_label = QLabel("00:00 / 00:00", self)
+        self.playback_position_label.setMinimumWidth(128)
         self.playback_position_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         transport_bar.addWidget(self.playback_position_label)
 
@@ -125,11 +152,48 @@ class ECGPlotWidget(QWidget):
             self.playback_speed_combo.addItem(label, userData=value)
         self.playback_speed_combo.setCurrentIndex(self.playback_speed_combo.findData(1.0))
         self.playback_speed_combo.currentIndexChanged.connect(self._emit_playback_speed_change)
-        transport_bar.addWidget(self.playback_speed_combo)
 
         self.loop_checkbox = QCheckBox("Petla", self)
         self.loop_checkbox.toggled.connect(self.playback_loop_toggled.emit)
-        transport_bar.addWidget(self.loop_checkbox)
+
+        self.playback_settings_button = QToolButton(self)
+        self.playback_settings_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.playback_settings_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        self.playback_settings_button.setToolTip("Ustawienia odtwarzania")
+        self.playback_settings_button.setText("Ustawienia")
+
+        self.playback_settings_menu = QMenu(self.playback_settings_button)
+        settings_container = QWidget(self.playback_settings_menu)
+        settings_layout = QVBoxLayout(settings_container)
+        settings_layout.setContentsMargins(10, 10, 10, 10)
+        settings_layout.setSpacing(8)
+        self.loop_checkbox.setText("")
+
+        playback_speed_row = QHBoxLayout()
+        playback_speed_row.setContentsMargins(0, 0, 0, 0)
+        playback_speed_row.setSpacing(12)
+        playback_speed_label = QLabel("Prędkość", settings_container)
+        playback_speed_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        playback_speed_row.addWidget(playback_speed_label)
+        playback_speed_row.addStretch(1)
+        playback_speed_row.addWidget(self.playback_speed_combo, alignment=Qt.AlignmentFlag.AlignRight)
+        settings_layout.addLayout(playback_speed_row)
+
+        loop_row = QHBoxLayout()
+        loop_row.setContentsMargins(0, 0, 0, 0)
+        loop_row.setSpacing(12)
+        loop_label = QLabel("Pętla", settings_container)
+        loop_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        loop_row.addWidget(loop_label)
+        loop_row.addStretch(1)
+        loop_row.addWidget(self.loop_checkbox, alignment=Qt.AlignmentFlag.AlignRight)
+        settings_layout.addLayout(loop_row)
+
+        settings_action = QWidgetAction(self.playback_settings_menu)
+        settings_action.setDefaultWidget(settings_container)
+        self.playback_settings_menu.addAction(settings_action)
+        self.playback_settings_button.setMenu(self.playback_settings_menu)
+        transport_bar.addWidget(self.playback_settings_button)
 
         overview_container = QWidget(self)
         overview_layout = QVBoxLayout(overview_container)
@@ -186,6 +250,7 @@ class ECGPlotWidget(QWidget):
         self._overview_mode = "frequency"
         self._max_frequency_hz = DEFAULT_MAX_FREQUENCY_HZ
         self._last_frequency_cache_key: tuple[int, int, int, bool, float] | None = None
+        self._last_visible_time_range_key: tuple[float, float] | None = None
 
         self._current_playback_time = 0.0
         self._cursor_pos = 0.0
@@ -224,20 +289,24 @@ class ECGPlotWidget(QWidget):
         self._lead_visibility = {index: True for index in range(record.n_leads)} if record else {}
         self._cursor_pos = float(record.time_axis[0]) if record else 0.0
         self._last_frequency_cache_key = None
+        self._last_visible_time_range_key = None
         self._render()
 
     def set_playback_enabled(self, enabled: bool) -> None:
         for widget in (
             self.play_button,
             self.pause_button,
+            self.step_backward_button,
             self.stop_button,
+            self.step_forward_button,
             self.navigation_slider,
-            self.playback_speed_combo,
-            self.loop_checkbox,
+            self.playback_settings_button,
         ):
             widget.setEnabled(enabled)
+        self.playback_speed_combo.setEnabled(enabled)
+        self.loop_checkbox.setEnabled(enabled)
         if not enabled:
-            self.playback_position_label.setText("0.0 s / 0.0 s")
+            self.playback_position_label.setText("00:00 / 00:00")
             self.navigation_slider.blockSignals(True)
             self.navigation_slider.setValue(0)
             self.navigation_slider.blockSignals(False)
@@ -245,7 +314,9 @@ class ECGPlotWidget(QWidget):
     def set_playback_position(self, current_time_sec: float, duration_sec: float) -> None:
         clamped_duration = max(float(duration_sec), 0.0)
         clamped_time = min(max(float(current_time_sec), 0.0), clamped_duration)
-        self.playback_position_label.setText(f"{clamped_time:.1f} s / {clamped_duration:.1f} s")
+        self.playback_position_label.setText(
+            f"{format_playback_clock(clamped_time)} / {format_playback_clock(clamped_duration)}"
+        )
         slider_value = 0
         if clamped_duration > 0.0:
             slider_value = int(round((clamped_time / clamped_duration) * self.navigation_slider.maximum()))
@@ -309,7 +380,6 @@ class ECGPlotWidget(QWidget):
         self.cursor_line.setPos(absolute_cursor_time)
 
         self._update_revealed_data(view_start, absolute_cursor_time)
-        self._schedule_frequency_overview_update()
 
     def _update_revealed_data(self, view_start: float, cursor_pos: float) -> None:
         if self._record is None:
@@ -470,6 +540,17 @@ class ECGPlotWidget(QWidget):
             self.update_frequency_overview_plot()
             return
         self._overview_update_timer.start()
+
+    def _on_visible_time_range_changed(self, *_args) -> None:
+        current_range = self.visible_time_range()
+        if current_range is None:
+            self._last_visible_time_range_key = None
+            return
+        if current_range == self._last_visible_time_range_key:
+            return
+        self._last_visible_time_range_key = current_range
+        self.visible_time_range_changed.emit()
+        self._schedule_frequency_overview_update(immediate=True)
 
     def _display_signal(self) -> np.ndarray:
         if self._filtering_active and self._preview_signal is not None:

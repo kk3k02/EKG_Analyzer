@@ -7,21 +7,25 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
-    QFormLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QListWidget,
     QListWidgetItem,
+    QMenu,
     QPushButton,
     QRadioButton,
     QSlider,
     QSizePolicy,
     QStyle,
+    QToolButton,
     QVBoxLayout,
+    QWidgetAction,
     QWidget,
+    QFormLayout,
 )
 
+from app.gui.time_utils import format_playback_clock
 from app.services.preprocessing import SignalFilterConfig, default_filter_config
 
 
@@ -42,6 +46,8 @@ class ControlsPanel(QWidget):
     play_requested = Signal()
     pause_requested = Signal()
     stop_requested = Signal()
+    step_backward_requested = Signal()
+    step_forward_requested = Signal()
     playback_speed_changed = Signal(float)
     playback_loop_toggled = Signal(bool)
     playback_position_changed = Signal(float)
@@ -72,9 +78,17 @@ class ControlsPanel(QWidget):
 
         preset_group = QGroupBox("Okno czasu")
         preset_layout = QHBoxLayout(preset_group)
-        for label, value in (("2 s", 2), ("5 s", 5), ("10 s", 10), ("30 s", 30), ("Caly", None)):
+        for label, value in (
+            ("2 s", 2),
+            ("5 s", 5),
+            ("10 s", 10),
+            ("30 s", 30),
+            ("Caly", None),
+        ):
             button = QPushButton(label)
-            button.clicked.connect(lambda checked=False, v=value: self.window_preset_selected.emit(v))
+            button.clicked.connect(
+                lambda checked=False, v=value: self.window_preset_selected.emit(v)
+            )
             preset_layout.addWidget(button)
         layout.addWidget(preset_group)
 
@@ -89,7 +103,9 @@ class ControlsPanel(QWidget):
 
         self.filter_section_checkbox = QCheckBox("Filtrowanie")
         self.filter_section_checkbox.setChecked(False)
-        self.filter_section_checkbox.toggled.connect(self._toggle_filter_group_visibility)
+        self.filter_section_checkbox.toggled.connect(
+            self._toggle_filter_group_visibility
+        )
         layout.addWidget(self.filter_section_checkbox)
 
         self.filter_group = self._build_filter_group()
@@ -120,7 +136,9 @@ class ControlsPanel(QWidget):
         layout.addWidget(mode_group)
 
         self.active_lead_combo = QComboBox(self)
-        self.active_lead_combo.currentIndexChanged.connect(self.active_lead_changed.emit)
+        self.active_lead_combo.currentIndexChanged.connect(
+            self.active_lead_changed.emit
+        )
         layout.addWidget(QLabel("Aktywne odprowadzenie"))
         layout.addWidget(self.active_lead_combo)
 
@@ -166,7 +184,9 @@ class ControlsPanel(QWidget):
         self.active_lead_combo.blockSignals(False)
         self._emit_visibility()
 
-    def set_sampling_rate_controls(self, sampling_rate: float, enabled: bool, tooltip: str) -> None:
+    def set_sampling_rate_controls(
+        self, sampling_rate: float, enabled: bool, tooltip: str
+    ) -> None:
         self.sampling_rate_spin.blockSignals(True)
         self.sampling_rate_spin.setValue(sampling_rate)
         self.sampling_rate_spin.setEnabled(enabled)
@@ -214,25 +234,36 @@ class ControlsPanel(QWidget):
         for widget in (
             self.play_button,
             self.pause_button,
+            self.step_backward_button,
             self.stop_button,
+            self.step_forward_button,
             self.playback_slider,
-            self.playback_speed_combo,
-            self.loop_checkbox,
+            self.playback_settings_button,
         ):
             widget.setEnabled(enabled)
+        self.playback_speed_combo.setEnabled(enabled)
+        self.loop_checkbox.setEnabled(enabled)
         if not enabled:
-            self.playback_position_label.setText("0.0 s / 0.0 s")
+            self.playback_position_label.setText("00:00 / 00:00")
             self.playback_slider.blockSignals(True)
             self.playback_slider.setValue(0)
             self.playback_slider.blockSignals(False)
 
-    def set_playback_position(self, current_time_sec: float, duration_sec: float) -> None:
+    def set_playback_position(
+        self, current_time_sec: float, duration_sec: float
+    ) -> None:
         clamped_duration = max(duration_sec, 0.0)
         clamped_time = min(max(current_time_sec, 0.0), clamped_duration)
-        self.playback_position_label.setText(f"{clamped_time:.1f} s / {clamped_duration:.1f} s")
+        self.playback_position_label.setText(
+            f"{format_playback_clock(clamped_time)} / {format_playback_clock(clamped_duration)}"
+        )
         slider_value = 0
         if clamped_duration > 0:
-            slider_value = int(round((clamped_time / clamped_duration) * self.playback_slider.maximum()))
+            slider_value = int(
+                round(
+                    (clamped_time / clamped_duration) * self.playback_slider.maximum()
+                )
+            )
         self.playback_slider.blockSignals(True)
         self.playback_slider.setValue(slider_value)
         self.playback_slider.blockSignals(False)
@@ -256,7 +287,9 @@ class ControlsPanel(QWidget):
         layout.addWidget(self.highpass_checkbox)
 
         self.highpass_cutoff_spin = self._make_frequency_spin(DEFAULT=0.5)
-        self.highpass_cutoff_spin.setToolTip("Czestotliwosc odciecia filtra gornoprzepustowego.")
+        self.highpass_cutoff_spin.setToolTip(
+            "Czestotliwosc odciecia filtra gornoprzepustowego."
+        )
         self.highpass_cutoff_spin.valueChanged.connect(self._on_filter_control_changed)
         highpass_form = QFormLayout()
         highpass_form.addRow("Odciecie [Hz]", self.highpass_cutoff_spin)
@@ -268,14 +301,18 @@ class ControlsPanel(QWidget):
         layout.addWidget(self.lowpass_checkbox)
 
         self.lowpass_cutoff_spin = self._make_frequency_spin(DEFAULT=40.0)
-        self.lowpass_cutoff_spin.setToolTip("Czestotliwosc odciecia filtra dolnoprzepustowego.")
+        self.lowpass_cutoff_spin.setToolTip(
+            "Czestotliwosc odciecia filtra dolnoprzepustowego."
+        )
         self.lowpass_cutoff_spin.valueChanged.connect(self._on_filter_control_changed)
         lowpass_form = QFormLayout()
         lowpass_form.addRow("Odciecie [Hz]", self.lowpass_cutoff_spin)
         layout.addLayout(lowpass_form)
 
         self.bandpass_checkbox = QCheckBox("Filtr pasmowoprzepustowy")
-        self.bandpass_checkbox.setToolTip("Uzywa jednego filtra pasmowego zamiast osobnych etapow gorno- i dolnoprzepustowego.")
+        self.bandpass_checkbox.setToolTip(
+            "Uzywa jednego filtra pasmowego zamiast osobnych etapow gorno- i dolnoprzepustowego."
+        )
         self.bandpass_checkbox.toggled.connect(self._on_bandpass_toggled)
         layout.addWidget(self.bandpass_checkbox)
 
@@ -296,7 +333,9 @@ class ControlsPanel(QWidget):
         self.mains_frequency_combo = QComboBox(self)
         self.mains_frequency_combo.addItem("50 Hz", userData=50.0)
         self.mains_frequency_combo.addItem("60 Hz", userData=60.0)
-        self.mains_frequency_combo.currentIndexChanged.connect(self._on_filter_control_changed)
+        self.mains_frequency_combo.currentIndexChanged.connect(
+            self._on_filter_control_changed
+        )
         self.notch_q_spin = QDoubleSpinBox(self)
         self.notch_q_spin.setRange(1.0, 100.0)
         self.notch_q_spin.setDecimals(1)
@@ -322,23 +361,61 @@ class ControlsPanel(QWidget):
         icon_size = QSize(18, 18)
         self.play_button = QPushButton()
         self.pause_button = QPushButton()
+        self.step_backward_button = QPushButton()
         self.stop_button = QPushButton()
-        self.play_button.setIcon(self._make_tinted_standard_icon(QStyle.StandardPixmap.SP_MediaPlay, "#FFFFFF"))
-        self.pause_button.setIcon(self._make_tinted_standard_icon(QStyle.StandardPixmap.SP_MediaPause, "#FFFFFF"))
-        self.stop_button.setIcon(self._make_tinted_standard_icon(QStyle.StandardPixmap.SP_MediaStop, "#FFFFFF"))
+        self.step_forward_button = QPushButton()
+        self.play_button.setIcon(
+            self._make_tinted_standard_icon(
+                QStyle.StandardPixmap.SP_MediaPlay, "#FFFFFF"
+            )
+        )
+        self.pause_button.setIcon(
+            self._make_tinted_standard_icon(
+                QStyle.StandardPixmap.SP_MediaPause, "#FFFFFF"
+            )
+        )
+        self.step_backward_button.setIcon(
+            self._make_tinted_standard_icon(
+                QStyle.StandardPixmap.SP_MediaSeekBackward, "#FFFFFF"
+            )
+        )
+        self.stop_button.setIcon(
+            self._make_tinted_standard_icon(
+                QStyle.StandardPixmap.SP_MediaStop, "#FFFFFF"
+            )
+        )
+        self.step_forward_button.setIcon(
+            self._make_tinted_standard_icon(
+                QStyle.StandardPixmap.SP_MediaSeekForward, "#FFFFFF"
+            )
+        )
         self.play_button.setIconSize(icon_size)
         self.pause_button.setIconSize(icon_size)
+        self.step_backward_button.setIconSize(icon_size)
         self.stop_button.setIconSize(icon_size)
+        self.step_forward_button.setIconSize(icon_size)
         self.play_button.setToolTip("Start")
         self.pause_button.setToolTip("Pauza")
+        self.step_backward_button.setToolTip("Wstecz")
         self.stop_button.setToolTip("Stop")
+        self.step_forward_button.setToolTip("Do przodu")
         self.play_button.setAccessibleName("Start")
         self.pause_button.setAccessibleName("Pauza")
+        self.step_backward_button.setAccessibleName("Wstecz")
         self.stop_button.setAccessibleName("Stop")
+        self.step_forward_button.setAccessibleName("Do przodu")
         self.play_button.clicked.connect(self.play_requested.emit)
         self.pause_button.clicked.connect(self.pause_requested.emit)
+        self.step_backward_button.clicked.connect(self.step_backward_requested.emit)
         self.stop_button.clicked.connect(self.stop_requested.emit)
-        for button in (self.play_button, self.pause_button, self.stop_button):
+        self.step_forward_button.clicked.connect(self.step_forward_requested.emit)
+        for button in (
+            self.play_button,
+            self.pause_button,
+            self.step_backward_button,
+            self.stop_button,
+            self.step_forward_button,
+        ):
             button.setFixedWidth(42)
             button.setStyleSheet(
                 "QPushButton { background-color: #263238; border: 1px solid #263238; "
@@ -347,11 +424,14 @@ class ControlsPanel(QWidget):
             )
         buttons_layout.addWidget(self.play_button)
         buttons_layout.addWidget(self.pause_button)
+        buttons_layout.addSpacing(12)
+        buttons_layout.addWidget(self.step_backward_button)
         buttons_layout.addWidget(self.stop_button)
+        buttons_layout.addWidget(self.step_forward_button)
         layout.addLayout(buttons_layout)
 
         self.playback_state_label = QLabel("Stan: Zatrzymane")
-        self.playback_position_label = QLabel("0.0 s / 0.0 s")
+        self.playback_position_label = QLabel("00:00 / 00:00")
         layout.addWidget(self.playback_state_label)
         layout.addWidget(self.playback_position_label)
 
@@ -361,18 +441,70 @@ class ControlsPanel(QWidget):
         self.playback_slider.sliderMoved.connect(self._emit_playback_position)
         layout.addWidget(self.playback_slider)
 
-        speed_form = QFormLayout()
         self.playback_speed_combo = QComboBox(self)
         for label, value in (("0.5x", 0.5), ("1x", 1.0), ("2x", 2.0), ("4x", 4.0)):
             self.playback_speed_combo.addItem(label, userData=value)
-        self.playback_speed_combo.setCurrentIndex(self.playback_speed_combo.findData(1.0))
+        self.playback_speed_combo.setCurrentIndex(
+            self.playback_speed_combo.findData(1.0)
+        )
         self.playback_speed_combo.currentIndexChanged.connect(self._emit_playback_speed)
-        speed_form.addRow("Predkosc", self.playback_speed_combo)
-        layout.addLayout(speed_form)
 
         self.loop_checkbox = QCheckBox("Petla")
         self.loop_checkbox.toggled.connect(self.playback_loop_toggled.emit)
-        layout.addWidget(self.loop_checkbox)
+
+        self.playback_settings_button = QToolButton(self)
+        self.playback_settings_button.setPopupMode(
+            QToolButton.ToolButtonPopupMode.InstantPopup
+        )
+        self.playback_settings_button.setToolButtonStyle(
+            Qt.ToolButtonStyle.ToolButtonTextOnly
+        )
+        self.playback_settings_button.setToolTip("Ustawienia odtwarzania")
+        self.playback_settings_button.setText("Ustawienia")
+        self.playback_settings_button.setStyleSheet(
+            "QToolButton { background-color: #263238; border: 1px solid #263238; "
+            "border-radius: 6px; padding: 6px; color: #FFFFFF; } "
+            "QToolButton:disabled { background-color: #CFD8DC; border-color: #CFD8DC; color: #546E7A; }"
+        )
+
+        self.playback_settings_menu = QMenu(self.playback_settings_button)
+        settings_container = QWidget(self.playback_settings_menu)
+        settings_layout = QVBoxLayout(settings_container)
+        settings_layout.setContentsMargins(10, 10, 10, 10)
+        settings_layout.setSpacing(8)
+        self.loop_checkbox.setText("")
+
+        playback_speed_row = QHBoxLayout()
+        playback_speed_row.setContentsMargins(0, 0, 0, 0)
+        playback_speed_row.setSpacing(12)
+        playback_speed_label = QLabel("Prędkość", settings_container)
+        playback_speed_label.setAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+        )
+        playback_speed_row.addWidget(playback_speed_label)
+        playback_speed_row.addStretch(1)
+        playback_speed_row.addWidget(
+            self.playback_speed_combo, alignment=Qt.AlignmentFlag.AlignRight
+        )
+        settings_layout.addLayout(playback_speed_row)
+
+        loop_row = QHBoxLayout()
+        loop_row.setContentsMargins(0, 0, 0, 0)
+        loop_row.setSpacing(12)
+        loop_label = QLabel("Pętla", settings_container)
+        loop_label.setAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+        )
+        loop_row.addWidget(loop_label)
+        loop_row.addStretch(1)
+        loop_row.addWidget(self.loop_checkbox, alignment=Qt.AlignmentFlag.AlignRight)
+        settings_layout.addLayout(loop_row)
+
+        settings_action = QWidgetAction(self.playback_settings_menu)
+        settings_action.setDefaultWidget(settings_container)
+        self.playback_settings_menu.addAction(settings_action)
+        self.playback_settings_button.setMenu(self.playback_settings_menu)
+        layout.addWidget(self.playback_settings_button)
         return group
 
     def _make_frequency_spin(self, *, DEFAULT: float) -> QDoubleSpinBox:
@@ -388,7 +520,9 @@ class ControlsPanel(QWidget):
         visibility: dict[int, bool] = {}
         for row in range(self.leads_list.count()):
             item = self.leads_list.item(row)
-            visibility[int(item.data(Qt.ItemDataRole.UserRole))] = item.checkState() == Qt.CheckState.Checked
+            visibility[int(item.data(Qt.ItemDataRole.UserRole))] = (
+                item.checkState() == Qt.CheckState.Checked
+            )
         self.lead_visibility_changed.emit(visibility)
 
     def _emit_view_mode(self) -> None:
@@ -439,8 +573,12 @@ class ControlsPanel(QWidget):
         bandpass_enabled = self.bandpass_checkbox.isChecked()
         self.highpass_checkbox.setEnabled(not bandpass_enabled)
         self.lowpass_checkbox.setEnabled(not bandpass_enabled)
-        self.highpass_cutoff_spin.setEnabled(not bandpass_enabled and self.highpass_checkbox.isChecked())
-        self.lowpass_cutoff_spin.setEnabled(not bandpass_enabled and self.lowpass_checkbox.isChecked())
+        self.highpass_cutoff_spin.setEnabled(
+            not bandpass_enabled and self.highpass_checkbox.isChecked()
+        )
+        self.lowpass_cutoff_spin.setEnabled(
+            not bandpass_enabled and self.lowpass_checkbox.isChecked()
+        )
         self.bandpass_low_spin.setEnabled(bandpass_enabled)
         self.bandpass_high_spin.setEnabled(bandpass_enabled)
         self.mains_frequency_combo.setEnabled(self.notch_checkbox.isChecked())
@@ -470,7 +608,9 @@ class ControlsPanel(QWidget):
         self.bandpass_low_spin.setValue(defaults.bandpass.low)
         self.bandpass_high_spin.setValue(defaults.bandpass.high)
         self.notch_q_spin.setValue(defaults.notch.quality_factor)
-        self.mains_frequency_combo.setCurrentIndex(self.mains_frequency_combo.findData(defaults.notch.mains_frequency_hz))
+        self.mains_frequency_combo.setCurrentIndex(
+            self.mains_frequency_combo.findData(defaults.notch.mains_frequency_hz)
+        )
         self.highpass_cutoff_spin.blockSignals(False)
         self.lowpass_cutoff_spin.blockSignals(False)
         self.bandpass_low_spin.blockSignals(False)
@@ -488,7 +628,9 @@ class ControlsPanel(QWidget):
         duration_fraction = slider_value / max(self.playback_slider.maximum(), 1)
         self.playback_position_changed.emit(duration_fraction)
 
-    def _make_tinted_standard_icon(self, standard_pixmap: QStyle.StandardPixmap, color_hex: str) -> QIcon:
+    def _make_tinted_standard_icon(
+        self, standard_pixmap: QStyle.StandardPixmap, color_hex: str
+    ) -> QIcon:
         base_icon = self.style().standardIcon(standard_pixmap)
         pixmap = base_icon.pixmap(24, 24)
         tinted = pixmap.copy()

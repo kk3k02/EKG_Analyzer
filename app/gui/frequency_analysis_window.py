@@ -211,6 +211,11 @@ class FrequencyAnalysisDialog(QDialog):
                 error=False,
             )
 
+    def refresh_for_visible_range_change(self) -> None:
+        if not self.isVisible() or not self.range_visible_radio.isChecked():
+            return
+        self.recalculate()
+
     def closeEvent(self, event) -> None:  # type: ignore[override]
         parent = self.parent()
         if parent is not None and hasattr(parent, "_frequency_analysis_dialog"):

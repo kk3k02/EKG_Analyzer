@@ -205,16 +205,27 @@ class MainWindow(QMainWindow):
         self.controls.go_to_end_requested.connect(self.plot_widget.go_to_end)
         self.controls.sampling_rate_changed.connect(self._override_sampling_rate)
         self.controls.filter_config_changed.connect(self._apply_filter_config)
+        self.controls.play_requested.connect(self._play)
+        self.controls.pause_requested.connect(self._pause)
+        self.controls.step_backward_requested.connect(self._step_backward)
+        self.controls.stop_requested.connect(self._stop)
+        self.controls.step_forward_requested.connect(self._step_forward)
+        self.controls.playback_speed_changed.connect(self._set_playback_speed)
+        self.controls.playback_loop_toggled.connect(self._set_playback_loop)
+        self.controls.playback_position_changed.connect(self._seek_playback_fraction)
 
         self.plot_widget.cursor_changed.connect(self._update_cursor_status)
         self.plot_widget.selection_changed.connect(self._update_selection_status)
         self.plot_widget.selection_context_menu_requested.connect(self._open_selection_context_menu)
         self.plot_widget.play_requested.connect(self._play)
         self.plot_widget.pause_requested.connect(self._pause)
+        self.plot_widget.step_backward_requested.connect(self._step_backward)
         self.plot_widget.stop_requested.connect(self._stop)
+        self.plot_widget.step_forward_requested.connect(self._step_forward)
         self.plot_widget.playback_speed_changed.connect(self._set_playback_speed)
         self.plot_widget.playback_loop_toggled.connect(self._set_playback_loop)
         self.plot_widget.playback_position_changed.connect(self._seek_playback_fraction)
+        self.plot_widget.visible_time_range_changed.connect(self._refresh_frequency_analysis_for_visible_range)
 
     @staticmethod
     def _sampling_rate_control_state(record: ECGRecord) -> tuple[bool, str]:
@@ -408,6 +419,12 @@ class MainWindow(QMainWindow):
         self._render_current_window()
         self._update_playback_position_display()
 
+    def _step_backward(self) -> None:
+        self._step_playback(-self._effective_playback_window_seconds())
+
+    def _step_forward(self) -> None:
+        self._step_playback(self._effective_playback_window_seconds())
+
     def _reset_playback(self) -> None:
         self.playback_timer.stop()
         self.playback_state = PlaybackState(
@@ -449,6 +466,14 @@ class MainWindow(QMainWindow):
         self._render_current_window()
         self._update_playback_position_display()
 
+    def _step_playback(self, delta_seconds: float) -> None:
+        if not self._playback_available():
+            return
+        next_time = self.playback_state.current_time_sec + float(delta_seconds)
+        self.playback_state.current_time_sec = min(max(next_time, 0.0), self._max_playback_start_time())
+        self._render_current_window()
+        self._update_playback_position_display()
+
     def _render_current_window(self) -> None:
         if self.current_record is None:
             return
@@ -456,6 +481,7 @@ class MainWindow(QMainWindow):
             self.playback_state.current_time_sec,
             self._effective_playback_window_seconds(),
         )
+        self._refresh_frequency_analysis_for_visible_range()
 
     def _update_playback_position_display(self) -> None:
         self.controls.set_playback_position(self.playback_state.current_time_sec, self._playback_duration_seconds())
@@ -586,6 +612,11 @@ class MainWindow(QMainWindow):
             return
         self._frequency_analysis_dialog.update_input_data(self._build_frequency_analysis_input())
         self._frequency_analysis_dialog.recalculate()
+
+    def _refresh_frequency_analysis_for_visible_range(self) -> None:
+        if self._frequency_analysis_dialog is None:
+            return
+        self._frequency_analysis_dialog.refresh_for_visible_range_change()
 
     def _build_frequency_analysis_input(self) -> FrequencyAnalysisInput:
         if self.current_record is None:
