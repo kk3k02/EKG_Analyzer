@@ -85,16 +85,6 @@ class ControlsPanel(QWidget):
             preset_layout.addWidget(button)
         layout.addWidget(preset_group)
 
-        self.filter_section_checkbox = QCheckBox("Filtrowanie")
-        self.filter_section_checkbox.setChecked(False)
-        self.filter_section_checkbox.toggled.connect(
-            self._toggle_filter_group_visibility
-        )
-        layout.addWidget(self.filter_section_checkbox)
-
-        self.filter_group = self._build_filter_group()
-        layout.addWidget(self.filter_group)
-
         self.playback_group = self._build_playback_group()
 
         leads_group = QGroupBox("Odprowadzenia")
@@ -146,6 +136,16 @@ class ControlsPanel(QWidget):
         self.raw_checkbox = QCheckBox("Pokaz surowy sygnal jako nakladke")
         self.raw_checkbox.toggled.connect(self.raw_toggled.emit)
         layout.addWidget(self.raw_checkbox)
+
+        self.filter_section_checkbox = QCheckBox("Filtrowanie")
+        self.filter_section_checkbox.setChecked(False)
+        self.filter_section_checkbox.toggled.connect(
+            self._toggle_filter_group_visibility
+        )
+        layout.addWidget(self.filter_section_checkbox)
+
+        self.filter_group = self._build_filter_group()
+        layout.addWidget(self.filter_group)
 
         layout.addStretch(1)
         self._sync_filter_controls()

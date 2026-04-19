@@ -1,6 +1,16 @@
 from __future__ import annotations
 
-from PySide6.QtWidgets import QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout, QLabel, QVBoxLayout
+from PySide6.QtWidgets import (
+    QDialog,
+    QDialogButtonBox,
+    QDoubleSpinBox,
+    QFormLayout,
+    QLabel,
+    QVBoxLayout,
+)
+
+from app.gui.metadata_panel import MetadataPanel
+from app.models.ecg_record import ECGRecord
 
 
 class SamplingRateDialog(QDialog):
@@ -29,3 +39,27 @@ class SamplingRateDialog(QDialog):
     @property
     def sampling_rate(self) -> float:
         return float(self.spin_box.value())
+
+
+class MetadataDialog(QDialog):
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Informacje o pliku")
+        self.setModal(True)
+        self.resize(420, 260)
+
+        layout = QVBoxLayout(self)
+        self.metadata_panel = MetadataPanel(self)
+        layout.addWidget(self.metadata_panel)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close, self)
+        buttons.rejected.connect(self.reject)
+        buttons.accepted.connect(self.accept)
+        close_button = buttons.button(QDialogButtonBox.StandardButton.Close)
+        if close_button is not None:
+            close_button.setText("Zamknij")
+            close_button.clicked.connect(self.close)
+        layout.addWidget(buttons)
+
+    def set_record(self, record: ECGRecord | None) -> None:
+        self.metadata_panel.set_record(record)

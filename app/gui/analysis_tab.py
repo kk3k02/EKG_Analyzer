@@ -54,23 +54,25 @@ class FrequencyAnalysisDialog(QWidget):
         analysis_input: FrequencyAnalysisInput,
         *,
         visible_range_provider: Callable[[], tuple[float, float] | None],
+        show_controls_inline: bool = True,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self._analysis_input = analysis_input
         self._visible_range_provider = visible_range_provider
+        self._show_controls_inline = show_controls_inline
         self._spectrogram_image = pg.ImageItem(axisOrder="row-major")
 
         main_layout = QHBoxLayout(self)
         main_layout.setContentsMargins(8, 8, 8, 8)
         main_layout.setSpacing(8)
 
-        controls_container = QWidget(self)
-        controls_layout = QVBoxLayout(controls_container)
+        self.controls_container = QWidget()
+        controls_layout = QVBoxLayout(self.controls_container)
         controls_layout.setContentsMargins(0, 0, 0, 0)
         controls_layout.setSpacing(8)
-        controls_container.setMinimumWidth(320)
-        controls_container.setMaximumWidth(380)
+        self.controls_container.setMinimumWidth(320)
+        self.controls_container.setMaximumWidth(380)
 
         controls_layout.addWidget(self._build_signal_group())
         controls_layout.addWidget(self._build_psd_group())
@@ -94,8 +96,8 @@ class FrequencyAnalysisDialog(QWidget):
         controls_layout.addLayout(action_layout)
         controls_layout.addStretch(1)
 
-        plots_container = QWidget(self)
-        plots_layout = QVBoxLayout(plots_container)
+        self.plots_container = QWidget(self)
+        plots_layout = QVBoxLayout(self.plots_container)
         plots_layout.setContentsMargins(0, 0, 0, 0)
         plots_layout.setSpacing(8)
 
@@ -105,7 +107,7 @@ class FrequencyAnalysisDialog(QWidget):
         self.psd_plot.showGrid(x=True, y=True, alpha=0.2)
         self.psd_plot.setLabel("bottom", "Czestotliwosc", units="Hz")
         self.psd_plot.setLabel("left", "Gestosc mocy widmowej")
-        self.psd_plot.setTitle("PSD przez FFT")
+        self.psd_plot.setTitle("Widmo mocy (FFT)")
 
         self.spectrogram_plot = pg.PlotWidget()
         self.spectrogram_plot.setBackground("w")
@@ -113,18 +115,22 @@ class FrequencyAnalysisDialog(QWidget):
         self.spectrogram_plot.showGrid(x=True, y=True, alpha=0.15)
         self.spectrogram_plot.setLabel("bottom", "Czas", units="s")
         self.spectrogram_plot.setLabel("left", "Czestotliwosc", units="Hz")
-        self.spectrogram_plot.setTitle("Spektrogram STFT")
+        self.spectrogram_plot.setTitle("Spektrogram")
         self.spectrogram_plot.addItem(self._spectrogram_image)
         self._spectrogram_image.setLookupTable(self._build_lookup_table())
 
         plots_layout.addWidget(self.psd_plot, stretch=1)
         plots_layout.addWidget(self.spectrogram_plot, stretch=2)
 
-        main_layout.addWidget(controls_container, stretch=0)
-        main_layout.addWidget(plots_container, stretch=1)
+        if self._show_controls_inline:
+            main_layout.addWidget(self.controls_container, stretch=0)
+        main_layout.addWidget(self.plots_container, stretch=1)
 
         self.update_input_data(analysis_input)
         self.recalculate()
+
+    def analysis_controls_widget(self) -> QWidget:
+        return self.controls_container
 
     def update_input_data(self, analysis_input: FrequencyAnalysisInput) -> None:
         """Refresh dialog state after loading another record or changing filters."""
@@ -181,7 +187,7 @@ class FrequencyAnalysisDialog(QWidget):
         messages: list[str] = []
         if psd_result.message is not None:
             self.psd_plot.clear()
-            self.psd_plot.setTitle("PSD przez FFT")
+            self.psd_plot.setTitle("Widmo mocy (FFT)")
             messages.append(psd_result.message)
         else:
             self._render_psd(psd_result, lead_name=lead_name, source_label=signal_source_label)
@@ -241,7 +247,7 @@ class FrequencyAnalysisDialog(QWidget):
         return group
 
     def _build_psd_group(self) -> QGroupBox:
-        group = QGroupBox("PSD przez FFT", self)
+        group = QGroupBox("Widmo mocy (FFT)", self)
         form = QFormLayout(group)
 
         self.max_frequency_spin = QSpinBox(self)
@@ -252,12 +258,12 @@ class FrequencyAnalysisDialog(QWidget):
         self.psd_scale_combo.addItem("Liniowa", userData="linear")
         self.psd_scale_combo.addItem("Logarytmiczna", userData="log")
 
-        form.addRow("Max czestotliwosc [Hz]", self.max_frequency_spin)
+        form.addRow("Maks. czestotliwosc [Hz]", self.max_frequency_spin)
         form.addRow("Skala osi Y", self.psd_scale_combo)
         return group
 
     def _build_stft_group(self) -> QGroupBox:
-        group = QGroupBox("Spektrogram STFT", self)
+        group = QGroupBox("Spektrogram (STFT)", self)
         form = QFormLayout(group)
 
         self.nperseg_spin = QSpinBox(self)
@@ -270,12 +276,12 @@ class FrequencyAnalysisDialog(QWidget):
 
         self.nfft_spin = QSpinBox(self)
         self.nfft_spin.setRange(0, 16384)
-        self.nfft_spin.setSpecialValueText("Auto")
+        self.nfft_spin.setSpecialValueText("Automatycznie")
         self.nfft_spin.setValue(0)
 
         form.addRow("Dlugosc okna", self.nperseg_spin)
-        form.addRow("Overlap", self.noverlap_spin)
-        form.addRow("FFT size", self.nfft_spin)
+        form.addRow("Nakladanie", self.noverlap_spin)
+        form.addRow("Rozmiar FFT", self.nfft_spin)
         return group
 
     def _sync_manual_range_state(self) -> None:
@@ -323,7 +329,9 @@ class FrequencyAnalysisDialog(QWidget):
         self.psd_plot.showGrid(x=True, y=True, alpha=0.2)
         self.psd_plot.setLabel("bottom", "Czestotliwosc", units="Hz")
         self.psd_plot.setLabel("left", result.y_label)
-        self.psd_plot.setTitle(f"PSD przez FFT: {lead_name} ({source_label.lower()})")
+        self.psd_plot.setTitle(
+            f"Widmo mocy (FFT): {lead_name} ({source_label.lower()})"
+        )
 
         frequencies = np.asarray(result.frequencies_hz, dtype=float)
         values = np.asarray(result.power, dtype=float)
@@ -353,7 +361,7 @@ class FrequencyAnalysisDialog(QWidget):
         self.spectrogram_plot.showGrid(x=True, y=True, alpha=0.15)
         self.spectrogram_plot.setLabel("bottom", "Czas", units="s")
         self.spectrogram_plot.setLabel("left", "Czestotliwosc", units="Hz")
-        self.spectrogram_plot.setTitle("Spektrogram STFT")
+        self.spectrogram_plot.setTitle("Spektrogram")
 
         image = np.asarray(result.power_db, dtype=float)
         self._spectrogram_image.setLookupTable(self._build_lookup_table())
@@ -377,7 +385,7 @@ class FrequencyAnalysisDialog(QWidget):
         self.spectrogram_plot.clear()
         self.spectrogram_plot.addItem(self._spectrogram_image)
         self._spectrogram_image.setImage(np.empty((0, 0)), autoLevels=False)
-        self.spectrogram_plot.setTitle("Spektrogram STFT")
+        self.spectrogram_plot.setTitle("Spektrogram")
 
     def _set_message(self, message: str, *, error: bool) -> None:
         self.message_label.setText(message)

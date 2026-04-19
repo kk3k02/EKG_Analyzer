@@ -16,19 +16,17 @@ from PySide6.QtWidgets import (
     QMenu,
     QScrollArea,
     QSizePolicy,
-    QSplitter,
-    QSplitterHandle,
     QStatusBar,
     QTabWidget,
-    QToolButton,
     QVBoxLayout,
     QWidget,
+    QPushButton,
+    QStackedWidget,
 )
 
 from app.gui.controls_panel import ControlsPanel
-from app.gui.dialogs import SamplingRateDialog
+from app.gui.dialogs import MetadataDialog, SamplingRateDialog
 from app.gui.analysis_tab import FrequencyAnalysisDialog, FrequencyAnalysisInput
-from app.gui.metadata_panel import MetadataPanel
 from app.gui.plot_widget import CursorInfo, ECGPlotWidget
 from app.io.store_factory import StoreFactory
 from app.models.ecg_record import ECGRecord
@@ -81,79 +79,6 @@ class LoadFileTask(QRunnable):
             self.signals.failed.emit(str(exc))
 
 
-class CollapsibleSplitterHandle(QSplitterHandle):
-    def __init__(
-        self, orientation: Qt.Orientation, parent: "CollapsibleSplitter"
-    ) -> None:
-        super().__init__(orientation, parent)
-        self.toggle_button = QToolButton(self)
-        self.toggle_button.setAutoRaise(True)
-        self.toggle_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.toggle_button.clicked.connect(parent.toggle_primary_panel)
-        self.sync_state(collapsed=False)
-
-    def resizeEvent(self, event) -> None:  # type: ignore[override]
-        super().resizeEvent(event)
-        button_size = self.toggle_button.sizeHint()
-        self.toggle_button.move(
-            max((self.width() - button_size.width()) // 2, 0),
-            max((self.height() - button_size.height()) // 2, 0),
-        )
-
-    def sync_state(self, *, collapsed: bool) -> None:
-        self.toggle_button.setArrowType(
-            Qt.ArrowType.RightArrow if collapsed else Qt.ArrowType.LeftArrow
-        )
-        tooltip = "Rozwin panel boczny" if collapsed else "Zwin panel boczny"
-        self.toggle_button.setToolTip(tooltip)
-
-
-class CollapsibleSplitter(QSplitter):
-    def __init__(
-        self, orientation: Qt.Orientation, parent: QWidget | None = None
-    ) -> None:
-        super().__init__(orientation, parent)
-        self._stored_first_size = 320
-        self._collapse_handle: CollapsibleSplitterHandle | None = None
-        self.splitterMoved.connect(self._remember_first_panel_size)
-
-    def createHandle(self) -> QSplitterHandle:  # type: ignore[override]
-        handle = CollapsibleSplitterHandle(self.orientation(), self)
-        self._collapse_handle = handle
-        return handle
-
-    def toggle_primary_panel(self) -> None:
-        sizes = self.sizes()
-        if len(sizes) < 2:
-            return
-        total = sum(sizes)
-        if total <= 0:
-            return
-        if sizes[0] > 0:
-            self._stored_first_size = max(sizes[0], 220)
-            self.setSizes([0, total])
-            self._sync_handle(collapsed=True)
-            return
-
-        restored_first = min(max(self._stored_first_size, 220), max(total - 320, 220))
-        if restored_first <= 0:
-            restored_first = max(total // 4, 220)
-        self.setSizes([restored_first, max(total - restored_first, 0)])
-        self._sync_handle(collapsed=False)
-
-    def _remember_first_panel_size(self, _pos: int, _index: int) -> None:
-        sizes = self.sizes()
-        if len(sizes) < 2:
-            return
-        if sizes[0] > 0:
-            self._stored_first_size = sizes[0]
-        self._sync_handle(collapsed=sizes[0] == 0)
-
-    def _sync_handle(self, *, collapsed: bool) -> None:
-        if self._collapse_handle is not None:
-            self._collapse_handle.sync_state(collapsed=collapsed)
-
-
 class MainWindow(QMainWindow):
     """Main Stage 1 ECG import and visualization window."""
 
@@ -178,33 +103,37 @@ class MainWindow(QMainWindow):
         central_layout.setContentsMargins(6, 6, 6, 6)
         central_layout.setSpacing(6)
 
-        splitter = CollapsibleSplitter(Qt.Orientation.Horizontal, self)
-        splitter.setChildrenCollapsible(True)
-        splitter.setHandleWidth(18)
-        central_layout.addWidget(splitter)
-
-        left_panel = QWidget(self)
-        left_layout = QVBoxLayout(left_panel)
-        left_layout.setContentsMargins(0, 0, 0, 0)
-        left_layout.setSpacing(8)
-
         self.controls = ControlsPanel(self)
-        self.metadata_panel = MetadataPanel(self)
-        left_layout.addWidget(self.controls)
-        left_layout.addWidget(self.metadata_panel)
-        left_layout.addStretch(1)
-        left_panel.setMinimumWidth(0)
-        left_panel.setMaximumWidth(420)
-        left_panel.setSizePolicy(
-            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding
+        self.metadata_dialog = MetadataDialog(self)
+
+        self.sidebar_stack = QStackedWidget(self)
+
+        ecg_sidebar = QWidget(self)
+        ecg_sidebar_layout = QVBoxLayout(ecg_sidebar)
+        ecg_sidebar_layout.setContentsMargins(0, 0, 0, 0)
+        ecg_sidebar_layout.setSpacing(8)
+        ecg_sidebar_layout.addWidget(self.controls)
+        ecg_sidebar_layout.addStretch(1)
+
+        self.analysis_sidebar = QWidget(self)
+        self.analysis_sidebar_layout = QVBoxLayout(self.analysis_sidebar)
+        self.analysis_sidebar_layout.setContentsMargins(0, 0, 0, 0)
+        self.analysis_sidebar_layout.setSpacing(8)
+        self.analysis_sidebar_layout.addStretch(1)
+
+        self.sidebar_stack.addWidget(ecg_sidebar)
+        self.sidebar_stack.addWidget(self.analysis_sidebar)
+        self.sidebar_stack.setFixedWidth(360)
+        self.sidebar_stack.setSizePolicy(
+            QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding
         )
 
         left_scroll = QScrollArea(self)
-        left_scroll.setMinimumWidth(0)
+        left_scroll.setFixedWidth(360)
         left_scroll.setWidgetResizable(True)
         left_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
         left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        left_scroll.setWidget(left_panel)
+        left_scroll.setWidget(self.sidebar_stack)
 
         self.plot_widget = ECGPlotWidget(self)
         self.plot_widget.setSizePolicy(
@@ -233,11 +162,15 @@ class MainWindow(QMainWindow):
 
         self.ecg_tab_index = self.content_tabs.addTab(self.ecg_tab, "EKG")
         self.analysis_tab_index = self.content_tabs.addTab(self.analysis_tab, "Analiza")
+        self.info_button = QPushButton("Informacje", self)
+        self.info_button.setEnabled(False)
+        self.info_button.clicked.connect(self._open_metadata_dialog)
+        self.content_tabs.setCornerWidget(
+            self.info_button, Qt.Corner.TopRightCorner
+        )
 
-        splitter.addWidget(left_scroll)
-        splitter.addWidget(self.content_tabs)
-        splitter.setStretchFactor(0, 0)
-        splitter.setStretchFactor(1, 1)
+        central_layout.addWidget(left_scroll)
+        central_layout.addWidget(self.content_tabs, stretch=1)
 
         self.status_bar = QStatusBar(self)
         self.setStatusBar(self.status_bar)
@@ -256,9 +189,10 @@ class MainWindow(QMainWindow):
         self.status_bar.addPermanentWidget(self.selection_label, stretch=2)
 
         self._connect_signals()
-        self._apply_screen_adaptive_geometry(splitter)
+        self._apply_screen_adaptive_geometry()
         self.controls.sync_signal_display_mode(filters_active=False)
         self._update_frequency_analysis_action_state()
+        self._sync_sidebar_to_current_tab(self.content_tabs.currentIndex())
 
     def _build_menu(self) -> None:
         menu_bar = self.menuBar()
@@ -277,26 +211,23 @@ class MainWindow(QMainWindow):
         self.save_fragment_action.setEnabled(False)
         self.save_fragment_action.triggered.connect(self._save_selected_fragment)
 
-    def _apply_screen_adaptive_geometry(self, splitter: QSplitter) -> None:
+    def _apply_screen_adaptive_geometry(self) -> None:
         screen = self.screen() or QGuiApplication.primaryScreen()
         if screen is None:
             self.resize(1400, 900)
-            splitter.setSizes([320, 1080])
             return
 
         available = screen.availableGeometry()
         width = max(1200, min(int(available.width() * 0.88), 2200))
         height = max(760, min(int(available.height() * 0.88), 1400))
         self.resize(width, height)
-
-        left_width = max(280, min(int(width * 0.24), 420))
-        splitter.setSizes([left_width, max(width - left_width, 800)])
         self.move(
             available.x() + max((available.width() - width) // 2, 0),
             available.y() + max((available.height() - height) // 2, 0),
         )
 
     def _connect_signals(self) -> None:
+        self.content_tabs.currentChanged.connect(self._sync_sidebar_to_current_tab)
         self.plot_widget.load_requested.connect(self._choose_file)
         self.controls.view_mode_changed.connect(self.plot_widget.set_view_mode)
         self.controls.active_lead_changed.connect(self.plot_widget.set_active_lead)
@@ -382,7 +313,7 @@ class MainWindow(QMainWindow):
 
         self.current_record = record
         self._reset_playback()
-        self.metadata_panel.set_record(record)
+        self.metadata_dialog.set_record(record)
         self._update_file_info(record)
         self.controls.set_leads(record.lead_names)
         sampling_rate_enabled, sampling_rate_tooltip = (
@@ -413,7 +344,7 @@ class MainWindow(QMainWindow):
         self.current_record = self._build_record_with_sampling_rate(
             self.current_record, value
         )
-        self.metadata_panel.set_record(self.current_record)
+        self.metadata_dialog.set_record(self.current_record)
         self.controls.set_sampling_rate_controls(
             self.current_record.sampling_rate,
             enabled=True,
@@ -433,6 +364,7 @@ class MainWindow(QMainWindow):
         if self.current_record is None:
             self.processed_signal = None
             self._update_file_info(None)
+            self._update_info_button_state()
             self.controls.set_playback_enabled(False)
             self.plot_widget.set_playback_enabled(False)
             self.controls.set_playback_position(0.0, 0.0)
@@ -459,12 +391,20 @@ class MainWindow(QMainWindow):
         self.controls.sync_signal_display_mode(
             filters_active=self.filter_config.any_enabled()
         )
+        self._update_info_button_state()
         self._render_current_window()
         self._update_playback_position_display()
         self._update_fragment_action_state()
         self._update_frequency_analysis_action_state()
         if captured_warnings:
             self.status_bar.showMessage(str(captured_warnings[-1].message), 7000)
+
+    def _open_metadata_dialog(self) -> None:
+        self.metadata_dialog.set_record(self.current_record)
+        self.metadata_dialog.exec()
+
+    def _update_info_button_state(self) -> None:
+        self.info_button.setEnabled(self.current_record is not None)
 
     def _build_record_with_sampling_rate(
         self, record: ECGRecord, sampling_rate: float
@@ -660,6 +600,7 @@ class MainWindow(QMainWindow):
             and self.content_tabs.currentIndex() == self.analysis_tab_index
         ):
             self.content_tabs.setCurrentIndex(self.ecg_tab_index)
+        self._sync_sidebar_to_current_tab(self.content_tabs.currentIndex())
 
     def _update_fragment_action_state(self) -> None:
         self.save_fragment_action.setEnabled(
@@ -764,12 +705,26 @@ class MainWindow(QMainWindow):
             self._frequency_analysis_panel = FrequencyAnalysisDialog(
                 self._build_frequency_analysis_input(),
                 visible_range_provider=self.plot_widget.visible_time_range,
+                show_controls_inline=False,
                 parent=self.analysis_tab,
             )
             self.analysis_tab_layout.removeWidget(self.analysis_placeholder)
             self.analysis_placeholder.hide()
             self.analysis_tab_layout.addWidget(self._frequency_analysis_panel)
+            self.analysis_sidebar_layout.insertWidget(
+                0, self._frequency_analysis_panel.analysis_controls_widget()
+            )
         return self._frequency_analysis_panel
+
+    def _sync_sidebar_to_current_tab(self, index: int) -> None:
+        if (
+            index == self.analysis_tab_index
+            and self.content_tabs.isTabEnabled(self.analysis_tab_index)
+        ):
+            self._ensure_frequency_analysis_panel()
+            self.sidebar_stack.setCurrentWidget(self.analysis_sidebar)
+            return
+        self.sidebar_stack.setCurrentIndex(0)
 
     def _build_frequency_analysis_input(self) -> FrequencyAnalysisInput:
         if self.current_record is None:
