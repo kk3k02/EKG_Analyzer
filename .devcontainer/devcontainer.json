@@ -1,0 +1,48 @@
+{
+  "name": "EKG Analyzer",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": ".."
+  },
+  "mounts": [
+    "source=/tmp/.X11-unix,target=/tmp/.X11-unix,type=bind",
+    "source=${localEnv:HOME}/.Xauthority,target=/home/vscode/.Xauthority,type=bind,readonly",
+    "source=${localEnv:XDG_RUNTIME_DIR},target=/tmp/vscode-runtime,type=bind"
+  ],
+  "remoteUser": "vscode",
+  "containerEnv": {
+    "DISPLAY": "${localEnv:DISPLAY}",
+    "PIP_DISABLE_PIP_VERSION_CHECK": "1",
+    "PYTHONDONTWRITEBYTECODE": "1",
+    "QT_QPA_PLATFORM": "wayland;xcb",
+    "QT_X11_NO_MITSHM": "1",
+    "WAYLAND_DISPLAY": "${localEnv:WAYLAND_DISPLAY}",
+    "XAUTHORITY": "/home/vscode/.Xauthority",
+    "XDG_RUNTIME_DIR": "/tmp/vscode-runtime",
+    "XDG_SESSION_TYPE": "wayland"
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "ms-python.black-formatter",
+        "charliermarsh.ruff"
+      ],
+      "settings": {
+        "[python]": {
+          "editor.defaultFormatter": "ms-python.black-formatter",
+          "editor.formatOnSave": true
+        },
+        "python.defaultInterpreterPath": "${containerWorkspaceFolder}/.venv/bin/python",
+        "python.testing.pytestArgs": [
+          "tests",
+          "-p",
+          "no:cacheprovider"
+        ],
+        "python.testing.pytestEnabled": true
+      }
+    }
+  },
+  "postCreateCommand": "bash .devcontainer/post-create.sh"
+}
