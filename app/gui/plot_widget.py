@@ -32,6 +32,19 @@ class CursorInfo:
     lead_name: str
 
 
+class ECGSelectionViewBox(pg.ViewBox):
+    def __init__(self, drag_callback, *args, **kwargs) -> None:
+        kwargs.setdefault("enableMenu", False)
+        super().__init__(*args, **kwargs)
+        self._drag_callback = drag_callback
+
+    def mouseDragEvent(self, ev, axis=None) -> None:
+        if ev.button() == Qt.MouseButton.LeftButton:
+            self._drag_callback(ev)
+            return
+        ev.ignore()
+
+
 class ECGPlotWidget(QWidget):
     """Interactive Stage 1 ECG viewer built around pyqtgraph.
     Selection statistics emitted from this widget refer only to the active lead
@@ -42,6 +55,7 @@ class ECGPlotWidget(QWidget):
 
     cursor_changed = Signal(object)
     selection_changed = Signal(object)
+    selection_context_menu_requested = Signal()
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -52,9 +66,11 @@ class ECGPlotWidget(QWidget):
 
         pg.setConfigOptions(antialias=False)
 
-        self.main_plot = pg.PlotWidget()
+        self._main_view_box = ECGSelectionViewBox(self._on_plot_drag_selection)
+        self.main_plot = pg.PlotWidget(viewBox=self._main_view_box)
         self.main_plot.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.main_plot.setBackground("w")
+        self.main_plot.setMouseEnabled(x=False, y=False)
         self.main_plot.showGrid(x=True, y=True, alpha=0.25)
         self.main_plot.setLabel("bottom", "Czas", units="s")
         self.main_plot.setLabel("left", "Amplituda")
@@ -186,22 +202,25 @@ class ECGPlotWidget(QWidget):
         if self._record is None:
             return
 
-        self._current_playback_time = start_time
-        self._cursor_pos = start_time
-
         win_new = window_seconds if window_seconds > 0 else 5.0
         overlap = 1.0
+        record_start = float(self._record.time_axis[0])
+        playback_time = max(float(start_time), 0.0)
+        absolute_cursor_time = record_start + playback_time
 
-        page_idx = int(start_time / win_new)
-        page_start_raw = page_idx * win_new
+        self._current_playback_time = absolute_cursor_time
+        self._cursor_pos = absolute_cursor_time
 
-        view_start = max(float(self._record.time_axis[0]), page_start_raw - overlap)
+        page_idx = int(playback_time / win_new)
+        page_start_raw = record_start + (page_idx * win_new)
+
+        view_start = max(record_start, page_start_raw - overlap)
         view_end = view_start + win_new + (overlap if page_idx > 0 else 0)
 
         self.main_plot.setXRange(view_start, view_end, padding=0.0)
-        self.cursor_line.setPos(start_time)
+        self.cursor_line.setPos(absolute_cursor_time)
 
-        self._update_revealed_data(view_start, start_time)
+        self._update_revealed_data(view_start, absolute_cursor_time)
         self._schedule_frequency_overview_update()
 
     def _update_revealed_data(self, view_start: float, cursor_pos: float) -> None:
@@ -415,21 +434,121 @@ class ECGPlotWidget(QWidget):
         )
 
     def _on_mouse_clicked(self, event: tuple[object]) -> None:
-        pass
+        if self._record is None:
+            return
+
+        mouse_event = event[0]
+        if mouse_event.button() == Qt.MouseButton.RightButton:
+            if self._clicked_inside_selection(mouse_event.scenePos()):
+                self.selection_context_menu_requested.emit()
+            else:
+                self.clear_selection()
+            mouse_event.accept()
+            return
+        if mouse_event.button() != Qt.MouseButton.LeftButton:
+            return
+
+        pos = mouse_event.scenePos()
+        if not self.main_plot.sceneBoundingRect().contains(pos):
+            return
+
+        mouse_point = self.main_plot.plotItem.vb.mapSceneToView(pos)
+        x_value = float(mouse_point.x())
+        time_axis = self._record.time_axis
+        if x_value < float(time_axis[0]) or x_value > float(time_axis[-1]):
+            return
+
+        sample_width = 1.0 / float(self._record.sampling_rate)
+        view_start, view_end = self.main_plot.viewRange()[0]
+        view_width = max(float(view_end - view_start), sample_width)
+        total_width = max(float(time_axis[-1] - time_axis[0]), sample_width)
+        selection_width = min(max(view_width * 0.15, sample_width * 8.0), total_width)
+        self._set_selection_range(x_value - (selection_width / 2.0), x_value + (selection_width / 2.0))
+        mouse_event.accept()
+
+    def _clicked_inside_selection(self, scene_pos) -> bool:
+        selected_range = self.selected_time_range()
+        if self._record is None or selected_range is None:
+            return False
+        mouse_point = self.main_plot.plotItem.vb.mapSceneToView(scene_pos)
+        click_time = float(mouse_point.x())
+        start_time, end_time = selected_range
+        return start_time <= click_time <= end_time
+
+    def _on_plot_drag_selection(self, mouse_event) -> None:
+        if self._record is None:
+            mouse_event.ignore()
+            return
+
+        start_point = self.main_plot.plotItem.vb.mapToView(mouse_event.buttonDownPos())
+        end_point = self.main_plot.plotItem.vb.mapToView(mouse_event.pos())
+        self._set_selection_range(float(start_point.x()), float(end_point.x()))
+        mouse_event.accept()
+
+    def _set_selection_range(self, start_time: float, end_time: float) -> None:
+        if self._record is None:
+            return
+
+        first_time = float(self._record.time_axis[0])
+        last_time = float(self._record.time_axis[-1])
+        sample_width = 1.0 / float(self._record.sampling_rate)
+
+        bounded_start = max(first_time, min(start_time, end_time))
+        bounded_end = min(last_time, max(start_time, end_time))
+        if bounded_end - bounded_start < sample_width:
+            midpoint = min(max((start_time + end_time) / 2.0, first_time), last_time)
+            bounded_start = max(first_time, midpoint - (sample_width / 2.0))
+            bounded_end = min(last_time, bounded_start + sample_width)
+            bounded_start = max(first_time, bounded_end - sample_width)
+        if bounded_end <= bounded_start:
+            return
+
+        self.selection_region.blockSignals(True)
+        self.selection_region.setRegion((bounded_start, bounded_end))
+        self.selection_region.blockSignals(False)
+        self.selection_region.show()
+        self._emit_selection_stats()
 
     def _emit_selection_stats(self) -> None:
         if self._record is None or not self.selection_region.isVisible():
+            self.selection_changed.emit(None)
             return
 
         start_time, end_time = self.selection_region.getRegion()
         start_idx, end_idx = self._time_range_to_indices(start_time, end_time)
         if end_idx - start_idx <= 0:
+            self.selection_changed.emit(None)
             return
 
         lead_idx = self._active_lead if self._view_mode == "single" else 0
         signal_segment = self._display_signal()[start_idx:end_idx, lead_idx]
         time_axis = self._record.time_axis[start_idx:end_idx]
         self.selection_changed.emit(compute_selection_stats(time_axis, signal_segment))
+
+    def clear_selection(self) -> None:
+        if not self.selection_region.isVisible():
+            return
+        self.selection_region.hide()
+        self.selection_changed.emit(None)
+
+    def selected_sample_range(self) -> tuple[int, int] | None:
+        if self._record is None or not self.selection_region.isVisible():
+            return None
+        start_time, end_time = self.selection_region.getRegion()
+        start_idx, end_idx = self._time_range_to_indices(start_time, end_time)
+        if end_idx - start_idx <= 0:
+            return None
+        return start_idx, end_idx
+
+    def selected_time_range(self) -> tuple[float, float] | None:
+        if self._record is None or not self.selection_region.isVisible():
+            return None
+        start_time, end_time = self.selection_region.getRegion()
+        clamped_start = max(float(self._record.time_axis[0]), float(start_time))
+        clamped_end = min(float(self._record.time_axis[-1]), float(end_time))
+        if clamped_end <= clamped_start:
+            return None
+        return clamped_start, clamped_end
 
     def reset_view(self) -> None:
         self._render()

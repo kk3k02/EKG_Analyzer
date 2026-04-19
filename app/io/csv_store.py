@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from app.io.base_loader import BaseECGLoader
+from app.io.base_store import BaseECGStore
 from app.models.ecg_record import ECGRecord
 from app.services.validation import build_time_axis
 from app.utils.file_utils import normalize_path
@@ -25,7 +25,7 @@ class CSVParseConfig:
     time_in_first_column: bool
 
 
-class CSVECGLoader(BaseECGLoader):
+class CSVECGStore(BaseECGStore):
     """Load CSV/TXT ECG data into the common Stage 1 record model.
 
     This loader supports:
@@ -36,6 +36,12 @@ class CSVECGLoader(BaseECGLoader):
     In the current iteration, manual sampling-rate override is intended mainly
     for table-only CSV/TXT inputs without an explicit time axis.
     """
+
+    source_format = "csv"
+    display_name = "CSV/TXT"
+    load_extensions = (".csv", ".txt")
+    save_extensions = (".csv", ".txt")
+    default_save_extension = ".csv"
 
     def load(self, file_path: str) -> ECGRecord:
         normalized_path = normalize_path(file_path)
@@ -96,6 +102,29 @@ class CSVECGLoader(BaseECGLoader):
             metadata=metadata,
             annotations=[],
         )
+
+    def save(self, record: ECGRecord, file_path: str) -> str:
+        normalized_path = normalize_path(self.ensure_save_extension(file_path))
+        output_path = Path(normalized_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        separator = str(record.metadata.get("separator", ",")) if output_path.suffix.lower() == ".txt" else ","
+        if separator not in {",", ";", "\t"}:
+            separator = ","
+
+        with output_path.open("w", encoding="utf-8", newline="") as handle:
+            writer = csv.writer(handle, delimiter=separator)
+            writer.writerow(["time", *record.lead_names])
+            for sample_index in range(record.n_samples):
+                row = np.asarray(record.signal[sample_index], dtype=float).reshape(-1)
+                writer.writerow(
+                    [
+                        f"{float(record.time_axis[sample_index]):.12g}",
+                        *[f"{float(value):.12g}" for value in row],
+                    ]
+                )
+
+        return normalized_path
 
     def _detect_config(self, file_path: str) -> CSVParseConfig:
         """Inspect a short sample to infer delimiter, header and time column."""

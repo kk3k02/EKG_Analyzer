@@ -106,6 +106,7 @@ class FrequencyAnalysisDialog(QDialog):
 
         self.psd_plot = pg.PlotWidget()
         self.psd_plot.setBackground("w")
+        self.psd_plot.setMouseEnabled(x=False, y=False)
         self.psd_plot.showGrid(x=True, y=True, alpha=0.2)
         self.psd_plot.setLabel("bottom", "Czestotliwosc", units="Hz")
         self.psd_plot.setLabel("left", "Gestosc mocy widmowej")
@@ -113,6 +114,7 @@ class FrequencyAnalysisDialog(QDialog):
 
         self.spectrogram_plot = pg.PlotWidget()
         self.spectrogram_plot.setBackground("w")
+        self.spectrogram_plot.setMouseEnabled(x=False, y=False)
         self.spectrogram_plot.showGrid(x=True, y=True, alpha=0.15)
         self.spectrogram_plot.setLabel("bottom", "Czas", units="s")
         self.spectrogram_plot.setLabel("left", "Czestotliwosc", units="Hz")

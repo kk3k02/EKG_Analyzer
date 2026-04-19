@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 import warnings
 
 import numpy as np
@@ -12,6 +13,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QMainWindow,
     QMessageBox,
+    QMenu,
     QScrollArea,
     QSizePolicy,
     QSplitter,
@@ -25,7 +27,7 @@ from app.gui.dialogs import SamplingRateDialog
 from app.gui.frequency_analysis_window import FrequencyAnalysisDialog, FrequencyAnalysisInput
 from app.gui.metadata_panel import MetadataPanel
 from app.gui.plot_widget import CursorInfo, ECGPlotWidget
-from app.io.loader_factory import LoaderFactory
+from app.io.store_factory import StoreFactory
 from app.models.ecg_record import ECGRecord
 from app.services.preprocessing import SignalFilterConfig, default_filter_config, preprocess_signal
 from app.services.selection_stats import SelectionStats
@@ -65,7 +67,7 @@ class LoadFileTask(QRunnable):
 
     def run(self) -> None:
         try:
-            loader = LoaderFactory.create_loader(self.file_path)
+            loader = StoreFactory.create_loader(self.file_path)
             record = loader.load(self.file_path)
             self.signals.finished.emit(LoadedRecord(record=record))
         except Exception as exc:
@@ -152,6 +154,17 @@ class MainWindow(QMainWindow):
 
     def _build_menu(self) -> None:
         menu_bar = self.menuBar()
+        file_menu = menu_bar.addMenu("Plik")
+        self.open_file_action = QAction("Wczytaj plik", self)
+        self.open_file_action.setStatusTip("Wczytaj zapis EKG albo zapisany fragment z pliku.")
+        self.open_file_action.triggered.connect(self._choose_file)
+        file_menu.addAction(self.open_file_action)
+
+        self.save_fragment_action = QAction("Zapisz zaznaczony fragment", self)
+        self.save_fragment_action.setStatusTip("Zapisz aktualnie zaznaczony fragment EKG w wybranym formacie.")
+        self.save_fragment_action.setEnabled(False)
+        self.save_fragment_action.triggered.connect(self._save_selected_fragment)
+
         analysis_menu = menu_bar.addMenu("Analiza")
 
         self.frequency_analysis_action = QAction("Analiza czestotliwosciowa", self)
@@ -201,6 +214,7 @@ class MainWindow(QMainWindow):
 
         self.plot_widget.cursor_changed.connect(self._update_cursor_status)
         self.plot_widget.selection_changed.connect(self._update_selection_status)
+        self.plot_widget.selection_context_menu_requested.connect(self._open_selection_context_menu)
 
     @staticmethod
     def _sampling_rate_control_state(record: ECGRecord) -> tuple[bool, str]:
@@ -258,6 +272,7 @@ class MainWindow(QMainWindow):
         self._refresh_processed_signal()
         self._refresh_frequency_analysis_dialog()
         self.selection_label.setText("Zaznaczenie techniczne: -")
+        self._update_fragment_action_state()
         self.status_bar.showMessage(f"Wczytano {record.file_name}", 5000)
 
     def _handle_load_error(self, message: str) -> None:
@@ -293,6 +308,7 @@ class MainWindow(QMainWindow):
             self.controls.set_playback_position(0.0, 0.0)
             self._set_playback_status("zatrzymane")
             self.plot_widget.set_record(None, None, filtering_active=False)
+            self._update_fragment_action_state()
             self._update_frequency_analysis_action_state()
             return
         with warnings.catch_warnings(record=True) as captured_warnings:
@@ -311,6 +327,7 @@ class MainWindow(QMainWindow):
         self.controls.sync_signal_display_mode(filters_active=self.filter_config.any_enabled())
         self._render_current_window()
         self._update_playback_position_display()
+        self._update_fragment_action_state()
         self._update_frequency_analysis_action_state()
         if captured_warnings:
             self.status_bar.showMessage(str(captured_warnings[-1].message), 7000)
@@ -333,12 +350,17 @@ class MainWindow(QMainWindow):
             f"Kursor: t={info.time_value:.3f} s | probka={info.sample_index} | amp={info.amplitude:.4f} | lead={info.lead_name}"
         )
 
-    def _update_selection_status(self, stats: SelectionStats) -> None:
+    def _update_selection_status(self, stats: SelectionStats | None) -> None:
+        if stats is None:
+            self.selection_label.setText("Zaznaczenie techniczne: -")
+            self._update_fragment_action_state()
+            return
         self.selection_label.setText(
             "Zaznaczenie techniczne: "
             f"{stats.start_time:.3f}-{stats.end_time:.3f} s | dt={stats.duration:.3f} s | "
             f"min={stats.minimum:.4f} | max={stats.maximum:.4f} | mean={stats.mean:.4f} | std={stats.std:.4f}"
         )
+        self._update_fragment_action_state()
 
     def _update_file_info(self, record: ECGRecord | None) -> None:
         if record is None:
@@ -456,7 +478,7 @@ class MainWindow(QMainWindow):
         return min(float(selected_window), max(self._playback_duration_seconds(), 0.1))
 
     def _max_playback_start_time(self) -> float:
-        return max(self._playback_duration_seconds() - self._effective_playback_window_seconds(), 0.0)
+        return max(self._playback_duration_seconds(), 0.0)
 
     def _set_playback_status(self, status_text: str) -> None:
         self.playback_status_label.setText(f"Odtwarzanie: {status_text}")
@@ -464,6 +486,76 @@ class MainWindow(QMainWindow):
 
     def _update_frequency_analysis_action_state(self) -> None:
         self.frequency_analysis_action.setEnabled(self.current_record is not None)
+
+    def _update_fragment_action_state(self) -> None:
+        self.save_fragment_action.setEnabled(
+            self.current_record is not None and self.plot_widget.selected_sample_range() is not None
+        )
+
+    def _save_selected_fragment(self) -> None:
+        if self.current_record is None:
+            QMessageBox.information(self, "Brak danych", "Najpierw wczytaj plik EKG.")
+            return
+
+        sample_range = self.plot_widget.selected_sample_range()
+        time_range = self.plot_widget.selected_time_range()
+        if sample_range is None or time_range is None:
+            QMessageBox.information(self, "Brak zaznaczenia", "Kliknij wykres, aby zaznaczyc fragment EKG.")
+            return
+
+        try:
+            fragment = self.current_record.slice_samples(*sample_range)
+        except ValueError as exc:
+            QMessageBox.warning(self, "Nieprawidlowe zaznaczenie", str(exc))
+            return
+
+        file_path, selected_filter = QFileDialog.getSaveFileName(
+            self,
+            "Zapisz zaznaczony fragment",
+            str(Path(self.current_record.file_path).resolve().parent / self._default_fragment_file_name(*time_range)),
+            ";;".join(StoreFactory.save_filters()),
+            StoreFactory.default_save_filter(self.current_record.source_format),
+        )
+        if not file_path:
+            return
+
+        store, target_path = StoreFactory.resolve_save_target(
+            file_path,
+            selected_filter,
+            fallback_format=self.current_record.source_format,
+            original_file_path=self.current_record.file_path,
+        )
+        saved_path = store.save(fragment, target_path)
+        self.status_bar.showMessage(f"Zapisano fragment do {Path(saved_path).name}", 5000)
+
+    def _open_selection_context_menu(self) -> None:
+        if self.plot_widget.selected_sample_range() is None:
+            return
+
+        menu = QMenu(self)
+        menu.addAction(self.save_fragment_action)
+        clear_action = menu.addAction("Wyczysc zaznaczenie")
+        chosen_action = menu.exec(self.cursor().pos())
+        if chosen_action == clear_action:
+            self.plot_widget.clear_selection()
+
+    def _default_fragment_file_name(self, start_time: float, end_time: float) -> str:
+        if self.current_record is None:
+            return "ecg_fragment.csv"
+        stem = Path(self.current_record.file_path).stem
+        extension = StoreFactory.preferred_save_extension(
+            self.current_record.source_format,
+            self.current_record.file_path,
+        )
+        start_label = self._format_fragment_time_for_file_name(start_time)
+        end_label = self._format_fragment_time_for_file_name(end_time)
+        return f"{stem}_fragment_{start_label}_{end_label}{extension}"
+
+    @staticmethod
+    def _format_fragment_time_for_file_name(time_value: float) -> str:
+        milliseconds = int(round(max(time_value, 0.0) * 1000.0))
+        seconds, millis = divmod(milliseconds, 1000)
+        return f"{seconds}s{millis:03d}ms"
 
     def _open_frequency_analysis_dialog(self) -> None:
         if self.current_record is None:
