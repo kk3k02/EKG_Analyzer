@@ -7,10 +7,9 @@ from pathlib import Path
 import numpy as np
 import pyqtgraph as pg
 from pyqtgraph.exporters import ImageExporter
-from PySide6.QtCore import QRectF, Qt
+from PySide6.QtCore import QRectF
 from PySide6.QtWidgets import (
     QComboBox,
-    QDialog,
     QFileDialog,
     QFormLayout,
     QGroupBox,
@@ -47,8 +46,8 @@ class FrequencyAnalysisInput:
     active_lead_index: int = 0
 
 
-class FrequencyAnalysisDialog(QDialog):
-    """Advanced frequency-analysis window for the currently loaded ECG record."""
+class FrequencyAnalysisDialog(QWidget):
+    """Advanced frequency-analysis view for the currently loaded ECG record."""
 
     def __init__(
         self,
@@ -58,10 +57,6 @@ class FrequencyAnalysisDialog(QDialog):
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Analiza czestotliwosciowa")
-        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)
-        self.resize(1280, 820)
-
         self._analysis_input = analysis_input
         self._visible_range_provider = visible_range_provider
         self._spectrogram_image = pg.ImageItem(axisOrder="row-major")
@@ -215,12 +210,6 @@ class FrequencyAnalysisDialog(QDialog):
         if not self.isVisible() or not self.range_visible_radio.isChecked():
             return
         self.recalculate()
-
-    def closeEvent(self, event) -> None:  # type: ignore[override]
-        parent = self.parent()
-        if parent is not None and hasattr(parent, "_frequency_analysis_dialog"):
-            parent._frequency_analysis_dialog = None
-        super().closeEvent(event)
 
     def _build_signal_group(self) -> QGroupBox:
         group = QGroupBox("Zakres analizy", self)

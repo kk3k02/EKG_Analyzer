@@ -30,7 +30,6 @@ from app.services.preprocessing import SignalFilterConfig, default_filter_config
 
 
 class ControlsPanel(QWidget):
-    load_requested = Signal()
     view_mode_changed = Signal(str)
     active_lead_changed = Signal(int)
     lead_visibility_changed = Signal(object)
@@ -39,8 +38,6 @@ class ControlsPanel(QWidget):
     grid_toggled = Signal(bool)
     raw_toggled = Signal(bool)
     filtered_toggled = Signal(bool)
-    go_to_start_requested = Signal()
-    go_to_end_requested = Signal()
     sampling_rate_changed = Signal(float)
     filter_config_changed = Signal(object)
     play_requested = Signal()
@@ -59,10 +56,6 @@ class ControlsPanel(QWidget):
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(10)
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
-
-        self.load_button = QPushButton("Wczytaj plik")
-        self.load_button.clicked.connect(self.load_requested.emit)
-        layout.addWidget(self.load_button)
 
         self.sampling_rate_spin = QDoubleSpinBox(self)
         self.sampling_rate_spin.setRange(0.1, 10000.0)
@@ -91,15 +84,6 @@ class ControlsPanel(QWidget):
             )
             preset_layout.addWidget(button)
         layout.addWidget(preset_group)
-
-        jump_layout = QHBoxLayout()
-        self.start_button = QPushButton("Poczatek")
-        self.end_button = QPushButton("Koniec")
-        self.start_button.clicked.connect(self.go_to_start_requested.emit)
-        self.end_button.clicked.connect(self.go_to_end_requested.emit)
-        jump_layout.addWidget(self.start_button)
-        jump_layout.addWidget(self.end_button)
-        layout.addLayout(jump_layout)
 
         self.filter_section_checkbox = QCheckBox("Filtrowanie")
         self.filter_section_checkbox.setChecked(False)
