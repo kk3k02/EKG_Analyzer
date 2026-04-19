@@ -1,0 +1,18 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Python: EKG Viewer",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "app.main",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "env": {
+        "QT_QPA_PLATFORM": "wayland;xcb",
+        "XDG_SESSION_TYPE": "wayland"
+      },
+      "justMyCode": true
+    }
+  ]
+}

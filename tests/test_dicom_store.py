@@ -4,13 +4,13 @@ import pytest
 from pydicom import Dataset, examples
 from pydicom.sequence import Sequence
 
-from app.io.dicom_loader import DICOMECGLoader, InvalidDicomECGError, UnsupportedDicomWaveformError
+from app.io.dicom_store import DICOMECGStore, InvalidDicomECGError, UnsupportedDicomWaveformError
 
 
 def test_dicom_loader_parses_real_ecg_waveform(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("app.io.dicom_loader.dcmread", lambda path: examples.waveform)
+    monkeypatch.setattr("app.io.dicom_store.dcmread", lambda path: examples.waveform)
 
-    record = DICOMECGLoader().load("sample.dcm")
+    record = DICOMECGStore().load("sample.dcm")
 
     assert record.source_format == "dicom"
     assert record.n_samples == 10000
@@ -25,10 +25,10 @@ def test_dicom_loader_parses_real_ecg_waveform(monkeypatch: pytest.MonkeyPatch) 
 def test_dicom_loader_rejects_dataset_without_waveform_sequence(monkeypatch: pytest.MonkeyPatch) -> None:
     dataset = Dataset()
     dataset.Modality = "ECG"
-    monkeypatch.setattr("app.io.dicom_loader.dcmread", lambda path: dataset)
+    monkeypatch.setattr("app.io.dicom_store.dcmread", lambda path: dataset)
 
     with pytest.raises(InvalidDicomECGError, match="WaveformSequence"):
-        DICOMECGLoader().load("missing_waveform.dcm")
+        DICOMECGStore().load("missing_waveform.dcm")
 
 
 def test_dicom_loader_rejects_unsupported_non_ecg_waveform(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -45,7 +45,7 @@ def test_dicom_loader_rejects_unsupported_non_ecg_waveform(monkeypatch: pytest.M
     channel.ChannelSourceSequence = Sequence([source])
     item.ChannelDefinitionSequence = Sequence([channel])
     dataset.WaveformSequence = Sequence([item])
-    monkeypatch.setattr("app.io.dicom_loader.dcmread", lambda path: dataset)
+    monkeypatch.setattr("app.io.dicom_store.dcmread", lambda path: dataset)
 
     with pytest.raises(UnsupportedDicomWaveformError, match="supported ECG waveform"):
-        DICOMECGLoader().load("resp_waveform.dcm")
+        DICOMECGStore().load("resp_waveform.dcm")

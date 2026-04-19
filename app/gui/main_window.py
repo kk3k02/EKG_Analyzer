@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 import warnings
 
 import numpy as np
@@ -12,22 +13,30 @@ from PySide6.QtWidgets import (
     QLabel,
     QMainWindow,
     QMessageBox,
+    QMenu,
     QScrollArea,
     QSizePolicy,
     QSplitter,
+    QSplitterHandle,
     QStatusBar,
+    QTabWidget,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
 from app.gui.controls_panel import ControlsPanel
 from app.gui.dialogs import SamplingRateDialog
-from app.gui.frequency_analysis_window import FrequencyAnalysisDialog, FrequencyAnalysisInput
+from app.gui.analysis_tab import FrequencyAnalysisDialog, FrequencyAnalysisInput
 from app.gui.metadata_panel import MetadataPanel
 from app.gui.plot_widget import CursorInfo, ECGPlotWidget
-from app.io.loader_factory import LoaderFactory
+from app.io.store_factory import StoreFactory
 from app.models.ecg_record import ECGRecord
-from app.services.preprocessing import SignalFilterConfig, default_filter_config, preprocess_signal
+from app.services.preprocessing import (
+    SignalFilterConfig,
+    default_filter_config,
+    preprocess_signal,
+)
 from app.services.selection_stats import SelectionStats
 from app.services.validation import build_time_axis
 
@@ -65,11 +74,84 @@ class LoadFileTask(QRunnable):
 
     def run(self) -> None:
         try:
-            loader = LoaderFactory.create_loader(self.file_path)
+            loader = StoreFactory.create_loader(self.file_path)
             record = loader.load(self.file_path)
             self.signals.finished.emit(LoadedRecord(record=record))
         except Exception as exc:
             self.signals.failed.emit(str(exc))
+
+
+class CollapsibleSplitterHandle(QSplitterHandle):
+    def __init__(
+        self, orientation: Qt.Orientation, parent: "CollapsibleSplitter"
+    ) -> None:
+        super().__init__(orientation, parent)
+        self.toggle_button = QToolButton(self)
+        self.toggle_button.setAutoRaise(True)
+        self.toggle_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.toggle_button.clicked.connect(parent.toggle_primary_panel)
+        self.sync_state(collapsed=False)
+
+    def resizeEvent(self, event) -> None:  # type: ignore[override]
+        super().resizeEvent(event)
+        button_size = self.toggle_button.sizeHint()
+        self.toggle_button.move(
+            max((self.width() - button_size.width()) // 2, 0),
+            max((self.height() - button_size.height()) // 2, 0),
+        )
+
+    def sync_state(self, *, collapsed: bool) -> None:
+        self.toggle_button.setArrowType(
+            Qt.ArrowType.RightArrow if collapsed else Qt.ArrowType.LeftArrow
+        )
+        tooltip = "Rozwin panel boczny" if collapsed else "Zwin panel boczny"
+        self.toggle_button.setToolTip(tooltip)
+
+
+class CollapsibleSplitter(QSplitter):
+    def __init__(
+        self, orientation: Qt.Orientation, parent: QWidget | None = None
+    ) -> None:
+        super().__init__(orientation, parent)
+        self._stored_first_size = 320
+        self._collapse_handle: CollapsibleSplitterHandle | None = None
+        self.splitterMoved.connect(self._remember_first_panel_size)
+
+    def createHandle(self) -> QSplitterHandle:  # type: ignore[override]
+        handle = CollapsibleSplitterHandle(self.orientation(), self)
+        self._collapse_handle = handle
+        return handle
+
+    def toggle_primary_panel(self) -> None:
+        sizes = self.sizes()
+        if len(sizes) < 2:
+            return
+        total = sum(sizes)
+        if total <= 0:
+            return
+        if sizes[0] > 0:
+            self._stored_first_size = max(sizes[0], 220)
+            self.setSizes([0, total])
+            self._sync_handle(collapsed=True)
+            return
+
+        restored_first = min(max(self._stored_first_size, 220), max(total - 320, 220))
+        if restored_first <= 0:
+            restored_first = max(total // 4, 220)
+        self.setSizes([restored_first, max(total - restored_first, 0)])
+        self._sync_handle(collapsed=False)
+
+    def _remember_first_panel_size(self, _pos: int, _index: int) -> None:
+        sizes = self.sizes()
+        if len(sizes) < 2:
+            return
+        if sizes[0] > 0:
+            self._stored_first_size = sizes[0]
+        self._sync_handle(collapsed=sizes[0] == 0)
+
+    def _sync_handle(self, *, collapsed: bool) -> None:
+        if self._collapse_handle is not None:
+            self._collapse_handle.sync_state(collapsed=collapsed)
 
 
 class MainWindow(QMainWindow):
@@ -82,7 +164,7 @@ class MainWindow(QMainWindow):
         self.thread_pool = QThreadPool.globalInstance()
         self.current_record: ECGRecord | None = None
         self.processed_signal: np.ndarray | None = None
-        self._frequency_analysis_dialog: FrequencyAnalysisDialog | None = None
+        self._frequency_analysis_panel: FrequencyAnalysisDialog | None = None
         self.filter_config: SignalFilterConfig = default_filter_config()
         self.playback_state = PlaybackState()
         self.playback_timer = QTimer(self)
@@ -96,9 +178,9 @@ class MainWindow(QMainWindow):
         central_layout.setContentsMargins(6, 6, 6, 6)
         central_layout.setSpacing(6)
 
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-        splitter.setChildrenCollapsible(False)
-        splitter.setHandleWidth(8)
+        splitter = CollapsibleSplitter(Qt.Orientation.Horizontal, self)
+        splitter.setChildrenCollapsible(True)
+        splitter.setHandleWidth(18)
         central_layout.addWidget(splitter)
 
         left_panel = QWidget(self)
@@ -111,21 +193,49 @@ class MainWindow(QMainWindow):
         left_layout.addWidget(self.controls)
         left_layout.addWidget(self.metadata_panel)
         left_layout.addStretch(1)
-        left_panel.setMinimumWidth(280)
+        left_panel.setMinimumWidth(0)
         left_panel.setMaximumWidth(420)
-        left_panel.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
+        left_panel.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding
+        )
 
         left_scroll = QScrollArea(self)
+        left_scroll.setMinimumWidth(0)
         left_scroll.setWidgetResizable(True)
         left_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
         left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         left_scroll.setWidget(left_panel)
 
         self.plot_widget = ECGPlotWidget(self)
-        self.plot_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.plot_widget.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
+
+        self.content_tabs = QTabWidget(self)
+        self.content_tabs.setDocumentMode(True)
+
+        self.ecg_tab = QWidget(self)
+        ecg_tab_layout = QVBoxLayout(self.ecg_tab)
+        ecg_tab_layout.setContentsMargins(0, 0, 0, 0)
+        ecg_tab_layout.setSpacing(0)
+        ecg_tab_layout.addWidget(self.plot_widget)
+
+        self.analysis_tab = QWidget(self)
+        self.analysis_tab_layout = QVBoxLayout(self.analysis_tab)
+        self.analysis_tab_layout.setContentsMargins(0, 0, 0, 0)
+        self.analysis_tab_layout.setSpacing(0)
+        self.analysis_placeholder = QLabel(
+            "Wczytaj plik EKG, aby otworzyc analize.", self.analysis_tab
+        )
+        self.analysis_placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.analysis_placeholder.setStyleSheet("color: #666666;")
+        self.analysis_tab_layout.addWidget(self.analysis_placeholder)
+
+        self.ecg_tab_index = self.content_tabs.addTab(self.ecg_tab, "EKG")
+        self.analysis_tab_index = self.content_tabs.addTab(self.analysis_tab, "Analiza")
 
         splitter.addWidget(left_scroll)
-        splitter.addWidget(self.plot_widget)
+        splitter.addWidget(self.content_tabs)
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
 
@@ -152,12 +262,20 @@ class MainWindow(QMainWindow):
 
     def _build_menu(self) -> None:
         menu_bar = self.menuBar()
-        analysis_menu = menu_bar.addMenu("Analiza")
+        file_menu = menu_bar.addMenu("Plik")
+        self.open_file_action = QAction("Wczytaj plik", self)
+        self.open_file_action.setStatusTip(
+            "Wczytaj zapis EKG albo zapisany fragment z pliku."
+        )
+        self.open_file_action.triggered.connect(self._choose_file)
+        file_menu.addAction(self.open_file_action)
 
-        self.frequency_analysis_action = QAction("Analiza czestotliwosciowa", self)
-        self.frequency_analysis_action.setStatusTip("Otworz zaawansowana analize widmowa aktualnego sygnalu EKG.")
-        self.frequency_analysis_action.triggered.connect(self._open_frequency_analysis_dialog)
-        analysis_menu.addAction(self.frequency_analysis_action)
+        self.save_fragment_action = QAction("Zapisz zaznaczony fragment", self)
+        self.save_fragment_action.setStatusTip(
+            "Zapisz aktualnie zaznaczony fragment EKG w wybranym formacie."
+        )
+        self.save_fragment_action.setEnabled(False)
+        self.save_fragment_action.triggered.connect(self._save_selected_fragment)
 
     def _apply_screen_adaptive_geometry(self, splitter: QSplitter) -> None:
         screen = self.screen() or QGuiApplication.primaryScreen()
@@ -179,28 +297,44 @@ class MainWindow(QMainWindow):
         )
 
     def _connect_signals(self) -> None:
-        self.controls.load_requested.connect(self._choose_file)
+        self.plot_widget.load_requested.connect(self._choose_file)
         self.controls.view_mode_changed.connect(self.plot_widget.set_view_mode)
         self.controls.active_lead_changed.connect(self.plot_widget.set_active_lead)
-        self.controls.lead_visibility_changed.connect(self.plot_widget.set_lead_visibility)
+        self.controls.lead_visibility_changed.connect(
+            self.plot_widget.set_lead_visibility
+        )
         self.controls.window_preset_selected.connect(self._set_window_preset)
         self.controls.reset_view_requested.connect(self.plot_widget.reset_view)
         self.controls.grid_toggled.connect(self.plot_widget.set_grid_visible)
         self.controls.raw_toggled.connect(self.plot_widget.set_raw_visible)
         self.controls.filtered_toggled.connect(self.plot_widget.set_filtered_visible)
-        self.controls.go_to_start_requested.connect(self.plot_widget.go_to_start)
-        self.controls.go_to_end_requested.connect(self.plot_widget.go_to_end)
         self.controls.sampling_rate_changed.connect(self._override_sampling_rate)
         self.controls.filter_config_changed.connect(self._apply_filter_config)
         self.controls.play_requested.connect(self._play)
         self.controls.pause_requested.connect(self._pause)
+        self.controls.step_backward_requested.connect(self._step_backward)
         self.controls.stop_requested.connect(self._stop)
+        self.controls.step_forward_requested.connect(self._step_forward)
         self.controls.playback_speed_changed.connect(self._set_playback_speed)
         self.controls.playback_loop_toggled.connect(self._set_playback_loop)
         self.controls.playback_position_changed.connect(self._seek_playback_fraction)
 
         self.plot_widget.cursor_changed.connect(self._update_cursor_status)
         self.plot_widget.selection_changed.connect(self._update_selection_status)
+        self.plot_widget.selection_context_menu_requested.connect(
+            self._open_selection_context_menu
+        )
+        self.plot_widget.play_requested.connect(self._play)
+        self.plot_widget.pause_requested.connect(self._pause)
+        self.plot_widget.step_backward_requested.connect(self._step_backward)
+        self.plot_widget.stop_requested.connect(self._stop)
+        self.plot_widget.step_forward_requested.connect(self._step_forward)
+        self.plot_widget.playback_speed_changed.connect(self._set_playback_speed)
+        self.plot_widget.playback_loop_toggled.connect(self._set_playback_loop)
+        self.plot_widget.playback_position_changed.connect(self._seek_playback_fraction)
+        self.plot_widget.visible_time_range_changed.connect(
+            self._refresh_frequency_analysis_for_visible_range
+        )
 
     @staticmethod
     def _sampling_rate_control_state(record: ECGRecord) -> tuple[bool, str]:
@@ -242,14 +376,18 @@ class MainWindow(QMainWindow):
         if record.metadata.get("sampling_rate_defaulted"):
             dialog = SamplingRateDialog(record.sampling_rate, self)
             if dialog.exec():
-                record = self._build_record_with_sampling_rate(record, dialog.sampling_rate)
+                record = self._build_record_with_sampling_rate(
+                    record, dialog.sampling_rate
+                )
 
         self.current_record = record
         self._reset_playback()
         self.metadata_panel.set_record(record)
         self._update_file_info(record)
         self.controls.set_leads(record.lead_names)
-        sampling_rate_enabled, sampling_rate_tooltip = self._sampling_rate_control_state(record)
+        sampling_rate_enabled, sampling_rate_tooltip = (
+            self._sampling_rate_control_state(record)
+        )
         self.controls.set_sampling_rate_controls(
             record.sampling_rate,
             enabled=sampling_rate_enabled,
@@ -258,6 +396,7 @@ class MainWindow(QMainWindow):
         self._refresh_processed_signal()
         self._refresh_frequency_analysis_dialog()
         self.selection_label.setText("Zaznaczenie techniczne: -")
+        self._update_fragment_action_state()
         self.status_bar.showMessage(f"Wczytano {record.file_name}", 5000)
 
     def _handle_load_error(self, message: str) -> None:
@@ -271,7 +410,9 @@ class MainWindow(QMainWindow):
         if not enabled:
             self.status_bar.showMessage(tooltip, 7000)
             return
-        self.current_record = self._build_record_with_sampling_rate(self.current_record, value)
+        self.current_record = self._build_record_with_sampling_rate(
+            self.current_record, value
+        )
         self.metadata_panel.set_record(self.current_record)
         self.controls.set_sampling_rate_controls(
             self.current_record.sampling_rate,
@@ -279,7 +420,10 @@ class MainWindow(QMainWindow):
             tooltip=self._sampling_rate_control_state(self.current_record)[1],
         )
         self._refresh_processed_signal()
-        self.status_bar.showMessage("Zaktualizowano sampling rate dla tabelarycznego CSV/TXT bez osi czasu.", 5000)
+        self.status_bar.showMessage(
+            "Zaktualizowano sampling rate dla tabelarycznego CSV/TXT bez osi czasu.",
+            5000,
+        )
 
     def _apply_filter_config(self, config: SignalFilterConfig) -> None:
         self.filter_config = config
@@ -290,9 +434,12 @@ class MainWindow(QMainWindow):
             self.processed_signal = None
             self._update_file_info(None)
             self.controls.set_playback_enabled(False)
+            self.plot_widget.set_playback_enabled(False)
             self.controls.set_playback_position(0.0, 0.0)
+            self.plot_widget.set_playback_position(0.0, 0.0)
             self._set_playback_status("zatrzymane")
             self.plot_widget.set_record(None, None, filtering_active=False)
+            self._update_fragment_action_state()
             self._update_frequency_analysis_action_state()
             return
         with warnings.catch_warnings(record=True) as captured_warnings:
@@ -308,14 +455,20 @@ class MainWindow(QMainWindow):
             filtering_active=self.filter_config.any_enabled(),
         )
         self.controls.set_playback_enabled(self._playback_available())
-        self.controls.sync_signal_display_mode(filters_active=self.filter_config.any_enabled())
+        self.plot_widget.set_playback_enabled(self._playback_available())
+        self.controls.sync_signal_display_mode(
+            filters_active=self.filter_config.any_enabled()
+        )
         self._render_current_window()
         self._update_playback_position_display()
+        self._update_fragment_action_state()
         self._update_frequency_analysis_action_state()
         if captured_warnings:
             self.status_bar.showMessage(str(captured_warnings[-1].message), 7000)
 
-    def _build_record_with_sampling_rate(self, record: ECGRecord, sampling_rate: float) -> ECGRecord:
+    def _build_record_with_sampling_rate(
+        self, record: ECGRecord, sampling_rate: float
+    ) -> ECGRecord:
         metadata = record.metadata.copy()
         metadata["sampling_rate_defaulted"] = False
         metadata["sampling_rate_overridden"] = True
@@ -333,12 +486,17 @@ class MainWindow(QMainWindow):
             f"Kursor: t={info.time_value:.3f} s | probka={info.sample_index} | amp={info.amplitude:.4f} | lead={info.lead_name}"
         )
 
-    def _update_selection_status(self, stats: SelectionStats) -> None:
+    def _update_selection_status(self, stats: SelectionStats | None) -> None:
+        if stats is None:
+            self.selection_label.setText("Zaznaczenie techniczne: -")
+            self._update_fragment_action_state()
+            return
         self.selection_label.setText(
             "Zaznaczenie techniczne: "
             f"{stats.start_time:.3f}-{stats.end_time:.3f} s | dt={stats.duration:.3f} s | "
             f"min={stats.minimum:.4f} | max={stats.maximum:.4f} | mean={stats.mean:.4f} | std={stats.std:.4f}"
         )
+        self._update_fragment_action_state()
 
     def _update_file_info(self, record: ECGRecord | None) -> None:
         if record is None:
@@ -383,6 +541,12 @@ class MainWindow(QMainWindow):
         self._render_current_window()
         self._update_playback_position_display()
 
+    def _step_backward(self) -> None:
+        self._step_playback(-self._effective_playback_window_seconds())
+
+    def _step_forward(self) -> None:
+        self._step_playback(self._effective_playback_window_seconds())
+
     def _reset_playback(self) -> None:
         self.playback_timer.stop()
         self.playback_state = PlaybackState(
@@ -400,7 +564,9 @@ class MainWindow(QMainWindow):
     def _seek_playback_fraction(self, position_fraction: float) -> None:
         if not self._playback_available():
             return
-        self.playback_state.current_time_sec = self._max_playback_start_time() * max(0.0, min(position_fraction, 1.0))
+        self.playback_state.current_time_sec = self._max_playback_start_time() * max(
+            0.0, min(position_fraction, 1.0)
+        )
         self._render_current_window()
         self._update_playback_position_display()
 
@@ -408,7 +574,9 @@ class MainWindow(QMainWindow):
         if not self.playback_state.is_playing or not self._playback_available():
             self.playback_timer.stop()
             return
-        delta_seconds = (self.playback_timer.interval() / 5000.0) * self.playback_state.playback_speed
+        delta_seconds = (
+            self.playback_timer.interval() / 5000.0
+        ) * self.playback_state.playback_speed
         max_start = self._max_playback_start_time()
         next_time = self.playback_state.current_time_sec + delta_seconds
         if next_time >= max_start:
@@ -424,6 +592,16 @@ class MainWindow(QMainWindow):
         self._render_current_window()
         self._update_playback_position_display()
 
+    def _step_playback(self, delta_seconds: float) -> None:
+        if not self._playback_available():
+            return
+        next_time = self.playback_state.current_time_sec + float(delta_seconds)
+        self.playback_state.current_time_sec = min(
+            max(next_time, 0.0), self._max_playback_start_time()
+        )
+        self._render_current_window()
+        self._update_playback_position_display()
+
     def _render_current_window(self) -> None:
         if self.current_record is None:
             return
@@ -431,14 +609,23 @@ class MainWindow(QMainWindow):
             self.playback_state.current_time_sec,
             self._effective_playback_window_seconds(),
         )
+        self._refresh_frequency_analysis_for_visible_range()
 
     def _update_playback_position_display(self) -> None:
-        self.controls.set_playback_position(self.playback_state.current_time_sec, self._playback_duration_seconds())
+        self.controls.set_playback_position(
+            self.playback_state.current_time_sec, self._playback_duration_seconds()
+        )
+        self.plot_widget.set_playback_position(
+            self.playback_state.current_time_sec, self._playback_duration_seconds()
+        )
 
     def _playback_available(self) -> bool:
         if self.current_record is None:
             return False
-        if self.current_record.n_samples <= 1 or self.current_record.duration_seconds <= 0:
+        if (
+            self.current_record.n_samples <= 1
+            or self.current_record.duration_seconds <= 0
+        ):
             return False
         return self.current_record.sampling_rate > 0
 
@@ -452,44 +639,137 @@ class MainWindow(QMainWindow):
             return PLAYBACK_FALLBACK_WINDOW_SECONDS
         selected_window = self.plot_widget.current_window_seconds()
         if selected_window is None:
-            return min(PLAYBACK_FALLBACK_WINDOW_SECONDS, max(self._playback_duration_seconds(), 0.1))
+            return min(
+                PLAYBACK_FALLBACK_WINDOW_SECONDS,
+                max(self._playback_duration_seconds(), 0.1),
+            )
         return min(float(selected_window), max(self._playback_duration_seconds(), 0.1))
 
     def _max_playback_start_time(self) -> float:
-        return max(self._playback_duration_seconds() - self._effective_playback_window_seconds(), 0.0)
+        return max(self._playback_duration_seconds(), 0.0)
 
     def _set_playback_status(self, status_text: str) -> None:
         self.playback_status_label.setText(f"Odtwarzanie: {status_text}")
-        self.controls.set_playback_state(status_text.capitalize())
+        self.plot_widget.set_playback_state(status_text.capitalize())
 
     def _update_frequency_analysis_action_state(self) -> None:
-        self.frequency_analysis_action.setEnabled(self.current_record is not None)
+        analysis_available = self.current_record is not None
+        self.content_tabs.setTabEnabled(self.analysis_tab_index, analysis_available)
+        if (
+            not analysis_available
+            and self.content_tabs.currentIndex() == self.analysis_tab_index
+        ):
+            self.content_tabs.setCurrentIndex(self.ecg_tab_index)
 
-    def _open_frequency_analysis_dialog(self) -> None:
+    def _update_fragment_action_state(self) -> None:
+        self.save_fragment_action.setEnabled(
+            self.current_record is not None
+            and self.plot_widget.selected_sample_range() is not None
+        )
+
+    def _save_selected_fragment(self) -> None:
         if self.current_record is None:
             QMessageBox.information(self, "Brak danych", "Najpierw wczytaj plik EKG.")
             return
 
-        dialog_input = self._build_frequency_analysis_input()
-        if self._frequency_analysis_dialog is None:
-            self._frequency_analysis_dialog = FrequencyAnalysisDialog(
-                dialog_input,
-                visible_range_provider=self.plot_widget.visible_time_range,
-                parent=self,
+        sample_range = self.plot_widget.selected_sample_range()
+        time_range = self.plot_widget.selected_time_range()
+        if sample_range is None or time_range is None:
+            QMessageBox.information(
+                self, "Brak zaznaczenia", "Kliknij wykres, aby zaznaczyc fragment EKG."
             )
-        else:
-            self._frequency_analysis_dialog.update_input_data(dialog_input)
-            self._frequency_analysis_dialog.recalculate()
+            return
 
-        self._frequency_analysis_dialog.show()
-        self._frequency_analysis_dialog.raise_()
-        self._frequency_analysis_dialog.activateWindow()
+        try:
+            fragment = self.current_record.slice_samples(*sample_range)
+        except ValueError as exc:
+            QMessageBox.warning(self, "Nieprawidlowe zaznaczenie", str(exc))
+            return
+
+        file_path, selected_filter = QFileDialog.getSaveFileName(
+            self,
+            "Zapisz zaznaczony fragment",
+            str(
+                Path(self.current_record.file_path).resolve().parent
+                / self._default_fragment_file_name(*time_range)
+            ),
+            ";;".join(StoreFactory.save_filters()),
+            StoreFactory.default_save_filter(self.current_record.source_format),
+        )
+        if not file_path:
+            return
+
+        store, target_path = StoreFactory.resolve_save_target(
+            file_path,
+            selected_filter,
+            fallback_format=self.current_record.source_format,
+            original_file_path=self.current_record.file_path,
+        )
+        saved_path = store.save(fragment, target_path)
+        self.status_bar.showMessage(
+            f"Zapisano fragment do {Path(saved_path).name}", 5000
+        )
+
+    def _open_selection_context_menu(self) -> None:
+        if self.plot_widget.selected_sample_range() is None:
+            return
+
+        menu = QMenu(self)
+        menu.addAction(self.save_fragment_action)
+        clear_action = menu.addAction("Wyczysc zaznaczenie")
+        chosen_action = menu.exec(self.cursor().pos())
+        if chosen_action == clear_action:
+            self.plot_widget.clear_selection()
+
+    def _default_fragment_file_name(self, start_time: float, end_time: float) -> str:
+        if self.current_record is None:
+            return "ecg_fragment.csv"
+        stem = Path(self.current_record.file_path).stem
+        extension = StoreFactory.preferred_save_extension(
+            self.current_record.source_format,
+            self.current_record.file_path,
+        )
+        start_label = self._format_fragment_time_for_file_name(start_time)
+        end_label = self._format_fragment_time_for_file_name(end_time)
+        return f"{stem}_fragment_{start_label}_{end_label}{extension}"
+
+    @staticmethod
+    def _format_fragment_time_for_file_name(time_value: float) -> str:
+        milliseconds = int(round(max(time_value, 0.0) * 1000.0))
+        seconds, millis = divmod(milliseconds, 1000)
+        return f"{seconds}s{millis:03d}ms"
+
+    def _open_frequency_analysis_tab(self) -> None:
+        if self.current_record is None:
+            QMessageBox.information(self, "Brak danych", "Najpierw wczytaj plik EKG.")
+            return
+
+        self._refresh_frequency_analysis_dialog()
+        self.content_tabs.setCurrentIndex(self.analysis_tab_index)
 
     def _refresh_frequency_analysis_dialog(self) -> None:
-        if self._frequency_analysis_dialog is None or self.current_record is None:
+        if self.current_record is None:
             return
-        self._frequency_analysis_dialog.update_input_data(self._build_frequency_analysis_input())
-        self._frequency_analysis_dialog.recalculate()
+        panel = self._ensure_frequency_analysis_panel()
+        panel.update_input_data(self._build_frequency_analysis_input())
+        panel.recalculate()
+
+    def _refresh_frequency_analysis_for_visible_range(self) -> None:
+        if self._frequency_analysis_panel is None:
+            return
+        self._frequency_analysis_panel.refresh_for_visible_range_change()
+
+    def _ensure_frequency_analysis_panel(self) -> FrequencyAnalysisDialog:
+        if self._frequency_analysis_panel is None:
+            self._frequency_analysis_panel = FrequencyAnalysisDialog(
+                self._build_frequency_analysis_input(),
+                visible_range_provider=self.plot_widget.visible_time_range,
+                parent=self.analysis_tab,
+            )
+            self.analysis_tab_layout.removeWidget(self.analysis_placeholder)
+            self.analysis_placeholder.hide()
+            self.analysis_tab_layout.addWidget(self._frequency_analysis_panel)
+        return self._frequency_analysis_panel
 
     def _build_frequency_analysis_input(self) -> FrequencyAnalysisInput:
         if self.current_record is None:
@@ -497,6 +777,7 @@ class MainWindow(QMainWindow):
         return FrequencyAnalysisInput(
             record=self.current_record,
             processed_signal=self.processed_signal,
-            filtered_available=self.filter_config.any_enabled() and self.processed_signal is not None,
+            filtered_available=self.filter_config.any_enabled()
+            and self.processed_signal is not None,
             active_lead_index=max(self.controls.active_lead_combo.currentIndex(), 0),
         )

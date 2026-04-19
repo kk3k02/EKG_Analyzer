@@ -5,7 +5,7 @@ import tempfile
 
 import numpy as np
 
-from app.io.csv_loader import CSVECGLoader
+from app.io.csv_store import CSVECGStore
 
 
 def _make_temp_file(name: str, content: str) -> Path:
@@ -18,7 +18,7 @@ def _make_temp_file(name: str, content: str) -> Path:
 def test_csv_loader_reads_time_axis_from_first_column() -> None:
     file_path = _make_temp_file("sample.csv", "time,I,II\n0.0,0.1,0.2\n0.004,0.2,0.3\n0.008,0.3,0.4\n")
 
-    record = CSVECGLoader().load(str(file_path))
+    record = CSVECGStore().load(str(file_path))
 
     assert record.n_samples == 3
     assert record.n_leads == 2
@@ -32,7 +32,7 @@ def test_csv_loader_reads_time_axis_from_first_column() -> None:
 def test_csv_loader_generates_time_axis_without_explicit_time_column() -> None:
     file_path = _make_temp_file("sample.txt", "0.1;0.2\n0.2;0.3\n0.3;0.4\n")
 
-    record = CSVECGLoader().load(str(file_path))
+    record = CSVECGStore().load(str(file_path))
 
     assert record.n_samples == 3
     assert record.n_leads == 2

@@ -9,12 +9,14 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QHBoxLayout,
     QLabel,
+    QPushButton,
     QSizePolicy,
     QStackedLayout,
     QVBoxLayout,
     QWidget,
 )
 
+from app.gui.playback_controls import PlaybackControlsWidget
 from app.models.ecg_record import ECGRecord
 from app.services.frequency_overview import (
     DEFAULT_MAX_FREQUENCY_HZ,
@@ -32,6 +34,19 @@ class CursorInfo:
     lead_name: str
 
 
+class ECGSelectionViewBox(pg.ViewBox):
+    def __init__(self, drag_callback, *args, **kwargs) -> None:
+        kwargs.setdefault("enableMenu", False)
+        super().__init__(*args, **kwargs)
+        self._drag_callback = drag_callback
+
+    def mouseDragEvent(self, ev, axis=None) -> None:
+        if ev.button() == Qt.MouseButton.LeftButton:
+            self._drag_callback(ev)
+            return
+        ev.ignore()
+
+
 class ECGPlotWidget(QWidget):
     """Interactive Stage 1 ECG viewer built around pyqtgraph.
     Selection statistics emitted from this widget refer only to the active lead
@@ -40,8 +55,19 @@ class ECGPlotWidget(QWidget):
     diagnostic measurements yet..
     """
 
+    load_requested = Signal()
     cursor_changed = Signal(object)
     selection_changed = Signal(object)
+    selection_context_menu_requested = Signal()
+    play_requested = Signal()
+    pause_requested = Signal()
+    stop_requested = Signal()
+    step_backward_requested = Signal()
+    step_forward_requested = Signal()
+    playback_speed_changed = Signal(float)
+    playback_loop_toggled = Signal(bool)
+    playback_position_changed = Signal(float)
+    visible_time_range_changed = Signal()
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -52,13 +78,73 @@ class ECGPlotWidget(QWidget):
 
         pg.setConfigOptions(antialias=False)
 
-        self.main_plot = pg.PlotWidget()
-        self.main_plot.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self._main_view_box = ECGSelectionViewBox(self._on_plot_drag_selection)
+        self.main_plot = pg.PlotWidget(viewBox=self._main_view_box)
+        self.main_plot.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
         self.main_plot.setBackground("w")
+        self.main_plot.setMouseEnabled(x=False, y=False)
         self.main_plot.showGrid(x=True, y=True, alpha=0.25)
         self.main_plot.setLabel("bottom", "Czas", units="s")
         self.main_plot.setLabel("left", "Amplituda")
         self.main_plot.addLegend(offset=(10, 10))
+        self.main_plot.plotItem.vb.sigXRangeChanged.connect(
+            self._on_visible_time_range_changed
+        )
+
+        self.plot_area = QWidget(self)
+        plot_area_layout = QStackedLayout(self.plot_area)
+        plot_area_layout.setContentsMargins(0, 0, 0, 0)
+        plot_area_layout.setStackingMode(QStackedLayout.StackingMode.StackAll)
+        plot_area_layout.addWidget(self.main_plot)
+
+        self.empty_state_overlay = QWidget(self.plot_area)
+        self.empty_state_overlay.setAttribute(
+            Qt.WidgetAttribute.WA_StyledBackground, True
+        )
+        self.empty_state_overlay.setStyleSheet("background: transparent;")
+        empty_state_layout = QVBoxLayout(self.empty_state_overlay)
+        empty_state_layout.setContentsMargins(24, 24, 24, 24)
+        empty_state_layout.setSpacing(12)
+        empty_state_layout.addStretch(1)
+
+        self.empty_state_button = QPushButton("Wczytaj plik", self.empty_state_overlay)
+        self.empty_state_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.empty_state_button.setMinimumWidth(180)
+        self.empty_state_button.setMinimumHeight(48)
+        self.empty_state_button.setStyleSheet(
+            "QPushButton { background-color: rgba(255, 255, 255, 0.96); border: 1px solid #CFD8DC; "
+            "border-radius: 10px; padding: 10px 18px; font-size: 15px; font-weight: 600; color: #263238; } "
+            "QPushButton:hover { background-color: rgba(255, 255, 255, 1.0); border-color: #90A4AE; } "
+            "QPushButton:pressed { background-color: rgba(236, 239, 241, 1.0); }"
+        )
+        self.empty_state_button.clicked.connect(self.load_requested.emit)
+        empty_state_layout.addWidget(
+            self.empty_state_button, alignment=Qt.AlignmentFlag.AlignCenter
+        )
+        empty_state_layout.addStretch(1)
+        plot_area_layout.addWidget(self.empty_state_overlay)
+
+        self.playback_controls = PlaybackControlsWidget(self)
+        self.playback_controls.play_requested.connect(self.play_requested.emit)
+        self.playback_controls.pause_requested.connect(self.pause_requested.emit)
+        self.playback_controls.stop_requested.connect(self.stop_requested.emit)
+        self.playback_controls.step_backward_requested.connect(
+            self.step_backward_requested.emit
+        )
+        self.playback_controls.step_forward_requested.connect(
+            self.step_forward_requested.emit
+        )
+        self.playback_controls.playback_speed_changed.connect(
+            self.playback_speed_changed.emit
+        )
+        self.playback_controls.playback_loop_toggled.connect(
+            self.playback_loop_toggled.emit
+        )
+        self.playback_controls.playback_position_changed.connect(
+            self.playback_position_changed.emit
+        )
 
         overview_container = QWidget(self)
         overview_layout = QVBoxLayout(overview_container)
@@ -94,7 +180,8 @@ class ECGPlotWidget(QWidget):
         self.overview_stack.addWidget(self.overview_empty_label)
         overview_layout.addLayout(self.overview_stack)
 
-        layout.addWidget(self.main_plot, stretch=2)
+        layout.addWidget(self.plot_area, stretch=2)
+        layout.addWidget(self.playback_controls, stretch=0)
         layout.addWidget(overview_container, stretch=1)
 
         self._record: ECGRecord | None = None
@@ -114,20 +201,29 @@ class ECGPlotWidget(QWidget):
         self._overview_mode = "frequency"
         self._max_frequency_hz = DEFAULT_MAX_FREQUENCY_HZ
         self._last_frequency_cache_key: tuple[int, int, int, bool, float] | None = None
+        self._last_visible_time_range_key: tuple[float, float] | None = None
 
         self._current_playback_time = 0.0
         self._cursor_pos = 0.0
 
-        self.cursor_line = pg.InfiniteLine(angle=90, movable=False, pen=pg.mkPen("#D32F2F", width=4))
+        self.cursor_line = pg.InfiniteLine(
+            angle=90, movable=False, pen=pg.mkPen("#D32F2F", width=4)
+        )
         self.main_plot.addItem(self.cursor_line, ignoreBounds=True)
 
-        self.selection_region = pg.LinearRegionItem(values=(0, 1), movable=True, brush=(200, 30, 30, 40))
+        self.selection_region = pg.LinearRegionItem(
+            values=(0, 1), movable=True, brush=(200, 30, 30, 40)
+        )
         self.selection_region.setZValue(10)
         self.selection_region.sigRegionChanged.connect(self._emit_selection_stats)
         self.main_plot.addItem(self.selection_region, ignoreBounds=True)
         self.selection_region.hide()
 
-        self._mouse_proxy = pg.SignalProxy(self.main_plot.scene().sigMouseMoved, rateLimit=60, slot=self._on_mouse_moved)
+        self._mouse_proxy = pg.SignalProxy(
+            self.main_plot.scene().sigMouseMoved,
+            rateLimit=60,
+            slot=self._on_mouse_moved,
+        )
         self._main_plot_mouse_proxy = pg.SignalProxy(
             self.main_plot.scene().sigMouseClicked,
             rateLimit=30,
@@ -139,6 +235,8 @@ class ECGPlotWidget(QWidget):
         self._overview_update_timer.setInterval(120)
         self._overview_update_timer.timeout.connect(self.update_frequency_overview_plot)
 
+        self._render()
+
     def set_record(
         self,
         record: ECGRecord | None,
@@ -149,10 +247,24 @@ class ECGPlotWidget(QWidget):
         self._record = record
         self._preview_signal = preview_signal
         self._filtering_active = filtering_active
-        self._lead_visibility = {index: True for index in range(record.n_leads)} if record else {}
+        self._lead_visibility = (
+            {index: True for index in range(record.n_leads)} if record else {}
+        )
         self._cursor_pos = float(record.time_axis[0]) if record else 0.0
         self._last_frequency_cache_key = None
+        self._last_visible_time_range_key = None
         self._render()
+
+    def set_playback_enabled(self, enabled: bool) -> None:
+        self.playback_controls.set_playback_enabled(enabled)
+
+    def set_playback_position(
+        self, current_time_sec: float, duration_sec: float
+    ) -> None:
+        self.playback_controls.set_playback_position(current_time_sec, duration_sec)
+
+    def set_playback_state(self, state: str) -> None:
+        self.playback_controls.set_playback_state(state)
 
     def set_raw_visible(self, visible: bool) -> None:
         self._raw_visible = visible
@@ -186,23 +298,25 @@ class ECGPlotWidget(QWidget):
         if self._record is None:
             return
 
-        self._current_playback_time = start_time
-        self._cursor_pos = start_time
-
         win_new = window_seconds if window_seconds > 0 else 5.0
         overlap = 1.0
+        record_start = float(self._record.time_axis[0])
+        playback_time = max(float(start_time), 0.0)
+        absolute_cursor_time = record_start + playback_time
 
-        page_idx = int(start_time / win_new)
-        page_start_raw = page_idx * win_new
+        self._current_playback_time = absolute_cursor_time
+        self._cursor_pos = absolute_cursor_time
 
-        view_start = max(float(self._record.time_axis[0]), page_start_raw - overlap)
+        page_idx = int(playback_time / win_new)
+        page_start_raw = record_start + (page_idx * win_new)
+
+        view_start = max(record_start, page_start_raw - overlap)
         view_end = view_start + win_new + (overlap if page_idx > 0 else 0)
 
         self.main_plot.setXRange(view_start, view_end, padding=0.0)
-        self.cursor_line.setPos(start_time)
+        self.cursor_line.setPos(absolute_cursor_time)
 
-        self._update_revealed_data(view_start, start_time)
-        self._schedule_frequency_overview_update()
+        self._update_revealed_data(view_start, absolute_cursor_time)
 
     def _update_revealed_data(self, view_start: float, cursor_pos: float) -> None:
         if self._record is None:
@@ -220,7 +334,9 @@ class ECGPlotWidget(QWidget):
         for i, lead_idx in enumerate(visible_indices):
             if i >= len(self._monitor_curves):
                 break
-            y_data = display_signal[start_idx:end_idx, lead_idx] + offsets.get(lead_idx, 0.0)
+            y_data = display_signal[start_idx:end_idx, lead_idx] + offsets.get(
+                lead_idx, 0.0
+            )
             self._monitor_curves[i].setData(x_data, y_data)
 
         for item in self._annotation_items:
@@ -239,8 +355,12 @@ class ECGPlotWidget(QWidget):
 
         if self._record is None:
             self.selection_region.hide()
+            self.empty_state_overlay.show()
+            self.empty_state_overlay.raise_()
             self._show_frequency_overview_message("Wczytaj plik, aby zobaczyc analize.")
             return
+
+        self.empty_state_overlay.hide()
 
         display_signal = self._display_signal()
         visible_indices = self._visible_indices()
@@ -255,8 +375,14 @@ class ECGPlotWidget(QWidget):
             self._monitor_curves.append(curve)
 
             if self._view_mode == "stacked":
-                label = pg.TextItem(text=self._record.lead_names[lead_idx], color="#D32F2F", anchor=(0, 0.5))
-                label.setPos(float(self._record.time_axis[0]), offsets.get(lead_idx, 0.0))
+                label = pg.TextItem(
+                    text=self._record.lead_names[lead_idx],
+                    color="#D32F2F",
+                    anchor=(0, 0.5),
+                )
+                label.setPos(
+                    float(self._record.time_axis[0]), offsets.get(lead_idx, 0.0)
+                )
                 self.main_plot.addItem(label)
 
         if self._record.annotations:
@@ -265,7 +391,9 @@ class ECGPlotWidget(QWidget):
             for ann in self._record.annotations:
                 sample_index = ann.get("sample", 0)
                 if 0 <= sample_index < len(self._record.time_axis):
-                    txt = pg.TextItem(text=ann.get("symbol", "?"), color="#000000", anchor=(0.5, 1))
+                    txt = pg.TextItem(
+                        text=ann.get("symbol", "?"), color="#000000", anchor=(0.5, 1)
+                    )
                     txt.setPos(
                         float(self._record.time_axis[sample_index]),
                         float(display_signal[sample_index, lead_idx]) + offset + 0.1,
@@ -286,7 +414,13 @@ class ECGPlotWidget(QWidget):
         if lead_idx is None:
             return
 
-        cache_key = (start_idx, end_idx, lead_idx, self.log_scale_checkbox.isChecked(), self._max_frequency_hz)
+        cache_key = (
+            start_idx,
+            end_idx,
+            lead_idx,
+            self.log_scale_checkbox.isChecked(),
+            self._max_frequency_hz,
+        )
         if cache_key == self._last_frequency_cache_key:
             return
 
@@ -310,7 +444,9 @@ class ECGPlotWidget(QWidget):
         self._last_frequency_cache_key = cache_key
         self._render_frequency_overview(result, self._record.lead_names[lead_idx])
 
-    def _render_frequency_overview(self, result: FrequencyOverviewResult, lead_name: str) -> None:
+    def _render_frequency_overview(
+        self, result: FrequencyOverviewResult, lead_name: str
+    ) -> None:
         self.overview_plot.clear()
         self.overview_plot.showGrid(x=True, y=True, alpha=0.15)
         self.overview_plot.setLabel("left", result.y_label)
@@ -339,7 +475,9 @@ class ECGPlotWidget(QWidget):
         self.overview_plot.setXRange(0.0, self._max_frequency_hz, padding=0.01)
         self.overview_stack.setCurrentWidget(self.overview_plot)
 
-    def _compute_offsets(self, signal: np.ndarray, visible_indices: list[int]) -> dict[int, float]:
+    def _compute_offsets(
+        self, signal: np.ndarray, visible_indices: list[int]
+    ) -> dict[int, float]:
         if self._view_mode == "single":
             return {self._active_lead: 0.0}
         return {idx: -i * 3.0 for i, idx in enumerate(visible_indices)}
@@ -364,6 +502,17 @@ class ECGPlotWidget(QWidget):
             return
         self._overview_update_timer.start()
 
+    def _on_visible_time_range_changed(self, *_args) -> None:
+        current_range = self.visible_time_range()
+        if current_range is None:
+            self._last_visible_time_range_key = None
+            return
+        if current_range == self._last_visible_time_range_key:
+            return
+        self._last_visible_time_range_key = current_range
+        self.visible_time_range_changed.emit()
+        self._schedule_frequency_overview_update(immediate=True)
+
     def _display_signal(self) -> np.ndarray:
         if self._filtering_active and self._preview_signal is not None:
             return self._preview_signal
@@ -374,9 +523,13 @@ class ECGPlotWidget(QWidget):
             return []
         if self._view_mode == "single":
             return [self._active_lead]
-        return [i for i in range(self._record.n_leads) if self._lead_visibility.get(i, True)]
+        return [
+            i for i in range(self._record.n_leads) if self._lead_visibility.get(i, True)
+        ]
 
-    def _time_range_to_indices(self, start_time: float, end_time: float) -> tuple[int, int]:
+    def _time_range_to_indices(
+        self, start_time: float, end_time: float
+    ) -> tuple[int, int]:
         if self._record is None:
             return 0, 0
         time_axis = self._record.time_axis
@@ -401,7 +554,13 @@ class ECGPlotWidget(QWidget):
     def _emit_cursor_info_at_pos(self, x_value: float) -> None:
         if self._record is None:
             return
-        idx = int(np.clip(np.searchsorted(self._record.time_axis, x_value), 0, self._record.n_samples - 1))
+        idx = int(
+            np.clip(
+                np.searchsorted(self._record.time_axis, x_value),
+                0,
+                self._record.n_samples - 1,
+            )
+        )
         lead_idx = self._active_lead if self._view_mode == "single" else 0
         if x_value < self._record.time_axis[0] or x_value > self._record.time_axis[-1]:
             return
@@ -415,21 +574,123 @@ class ECGPlotWidget(QWidget):
         )
 
     def _on_mouse_clicked(self, event: tuple[object]) -> None:
-        pass
+        if self._record is None:
+            return
+
+        mouse_event = event[0]
+        if mouse_event.button() == Qt.MouseButton.RightButton:
+            if self._clicked_inside_selection(mouse_event.scenePos()):
+                self.selection_context_menu_requested.emit()
+            else:
+                self.clear_selection()
+            mouse_event.accept()
+            return
+        if mouse_event.button() != Qt.MouseButton.LeftButton:
+            return
+
+        pos = mouse_event.scenePos()
+        if not self.main_plot.sceneBoundingRect().contains(pos):
+            return
+
+        mouse_point = self.main_plot.plotItem.vb.mapSceneToView(pos)
+        x_value = float(mouse_point.x())
+        time_axis = self._record.time_axis
+        if x_value < float(time_axis[0]) or x_value > float(time_axis[-1]):
+            return
+
+        sample_width = 1.0 / float(self._record.sampling_rate)
+        view_start, view_end = self.main_plot.viewRange()[0]
+        view_width = max(float(view_end - view_start), sample_width)
+        total_width = max(float(time_axis[-1] - time_axis[0]), sample_width)
+        selection_width = min(max(view_width * 0.15, sample_width * 8.0), total_width)
+        self._set_selection_range(
+            x_value - (selection_width / 2.0), x_value + (selection_width / 2.0)
+        )
+        mouse_event.accept()
+
+    def _clicked_inside_selection(self, scene_pos) -> bool:
+        selected_range = self.selected_time_range()
+        if self._record is None or selected_range is None:
+            return False
+        mouse_point = self.main_plot.plotItem.vb.mapSceneToView(scene_pos)
+        click_time = float(mouse_point.x())
+        start_time, end_time = selected_range
+        return start_time <= click_time <= end_time
+
+    def _on_plot_drag_selection(self, mouse_event) -> None:
+        if self._record is None:
+            mouse_event.ignore()
+            return
+
+        start_point = self.main_plot.plotItem.vb.mapToView(mouse_event.buttonDownPos())
+        end_point = self.main_plot.plotItem.vb.mapToView(mouse_event.pos())
+        self._set_selection_range(float(start_point.x()), float(end_point.x()))
+        mouse_event.accept()
+
+    def _set_selection_range(self, start_time: float, end_time: float) -> None:
+        if self._record is None:
+            return
+
+        first_time = float(self._record.time_axis[0])
+        last_time = float(self._record.time_axis[-1])
+        sample_width = 1.0 / float(self._record.sampling_rate)
+
+        bounded_start = max(first_time, min(start_time, end_time))
+        bounded_end = min(last_time, max(start_time, end_time))
+        if bounded_end - bounded_start < sample_width:
+            midpoint = min(max((start_time + end_time) / 2.0, first_time), last_time)
+            bounded_start = max(first_time, midpoint - (sample_width / 2.0))
+            bounded_end = min(last_time, bounded_start + sample_width)
+            bounded_start = max(first_time, bounded_end - sample_width)
+        if bounded_end <= bounded_start:
+            return
+
+        self.selection_region.blockSignals(True)
+        self.selection_region.setRegion((bounded_start, bounded_end))
+        self.selection_region.blockSignals(False)
+        self.selection_region.show()
+        self._emit_selection_stats()
 
     def _emit_selection_stats(self) -> None:
         if self._record is None or not self.selection_region.isVisible():
+            self.selection_changed.emit(None)
             return
 
         start_time, end_time = self.selection_region.getRegion()
         start_idx, end_idx = self._time_range_to_indices(start_time, end_time)
         if end_idx - start_idx <= 0:
+            self.selection_changed.emit(None)
             return
 
         lead_idx = self._active_lead if self._view_mode == "single" else 0
         signal_segment = self._display_signal()[start_idx:end_idx, lead_idx]
         time_axis = self._record.time_axis[start_idx:end_idx]
         self.selection_changed.emit(compute_selection_stats(time_axis, signal_segment))
+
+    def clear_selection(self) -> None:
+        if not self.selection_region.isVisible():
+            return
+        self.selection_region.hide()
+        self.selection_changed.emit(None)
+
+    def selected_sample_range(self) -> tuple[int, int] | None:
+        if self._record is None or not self.selection_region.isVisible():
+            return None
+        start_time, end_time = self.selection_region.getRegion()
+        start_idx, end_idx = self._time_range_to_indices(start_time, end_time)
+        if end_idx - start_idx <= 0:
+            return None
+        return start_idx, end_idx
+
+    def selected_time_range(self) -> tuple[float, float] | None:
+        if self._record is None or not self.selection_region.isVisible():
+            return None
+        start_time, end_time = self.selection_region.getRegion()
+        clamped_start = max(float(self._record.time_axis[0]), float(start_time))
+        clamped_end = min(float(self._record.time_axis[-1]), float(end_time))
+        if clamped_end <= clamped_start:
+            return None
+        return clamped_start, clamped_end
 
     def reset_view(self) -> None:
         self._render()

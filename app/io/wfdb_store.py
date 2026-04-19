@@ -4,13 +4,19 @@ from pathlib import Path
 
 import numpy as np
 
-from app.io.base_loader import BaseECGLoader
+from app.io.base_store import BaseECGStore
 from app.models.ecg_record import ECGRecord
 from app.services.validation import build_time_axis
 from app.utils.file_utils import normalize_path
 
 
-class WFDBECGLoader(BaseECGLoader):
+class WFDBECGStore(BaseECGStore):
+    source_format = "wfdb"
+    display_name = "WFDB"
+    load_extensions = (".hea", ".dat", ".atr")
+    save_extensions = (".hea",)
+    default_save_extension = ".hea"
+
     def load(self, file_path: str) -> ECGRecord:
         import wfdb
 
@@ -65,4 +71,49 @@ class WFDBECGLoader(BaseECGLoader):
             units="mV",
             metadata=metadata,
             annotations=annotations,
+        )
+
+    def save(self, record: ECGRecord, file_path: str) -> str:
+        import wfdb
+
+        normalized_path = normalize_path(self.ensure_save_extension(file_path))
+        output_path = Path(normalized_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        record_name = output_path.stem
+
+        comments = [str(comment) for comment in record.metadata.get("comments", []) if str(comment).strip()]
+        wfdb.wrsamp(
+            record_name=record_name,
+            fs=float(record.sampling_rate),
+            units=[record.units] * record.n_leads,
+            sig_name=record.lead_names,
+            p_signal=np.asarray(record.signal, dtype=float),
+            comments=comments,
+            write_dir=str(output_path.parent),
+        )
+
+        self._write_annotations(record, record_name=record_name, write_dir=str(output_path.parent))
+        return str(output_path)
+
+    def _write_annotations(self, record: ECGRecord, *, record_name: str, write_dir: str) -> None:
+        import wfdb
+
+        valid_annotations = [
+            annotation
+            for annotation in record.annotations
+            if isinstance(annotation.get("sample"), (int, np.integer))
+            and int(annotation["sample"]) >= 0
+            and str(annotation.get("symbol", "")).strip()
+        ]
+        if not valid_annotations:
+            return
+
+        wfdb.wrann(
+            record_name=record_name,
+            extension="atr",
+            sample=np.asarray([int(annotation["sample"]) for annotation in valid_annotations], dtype=int),
+            symbol=[str(annotation.get("symbol", "")).strip() for annotation in valid_annotations],
+            aux_note=[str(annotation.get("label", "") or "") for annotation in valid_annotations],
+            fs=float(record.sampling_rate),
+            write_dir=write_dir,
         )
