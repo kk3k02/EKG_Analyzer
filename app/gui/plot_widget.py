@@ -7,10 +7,14 @@ import pyqtgraph as pg
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QHBoxLayout,
     QLabel,
+    QPushButton,
+    QSlider,
     QSizePolicy,
     QStackedLayout,
+    QStyle,
     QVBoxLayout,
     QWidget,
 )
@@ -56,6 +60,12 @@ class ECGPlotWidget(QWidget):
     cursor_changed = Signal(object)
     selection_changed = Signal(object)
     selection_context_menu_requested = Signal()
+    play_requested = Signal()
+    pause_requested = Signal()
+    stop_requested = Signal()
+    playback_speed_changed = Signal(float)
+    playback_loop_toggled = Signal(bool)
+    playback_position_changed = Signal(float)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -75,6 +85,51 @@ class ECGPlotWidget(QWidget):
         self.main_plot.setLabel("bottom", "Czas", units="s")
         self.main_plot.setLabel("left", "Amplituda")
         self.main_plot.addLegend(offset=(10, 10))
+
+        self.navigation_slider = QSlider(Qt.Orientation.Horizontal, self)
+        self.navigation_slider.setRange(0, 1000)
+        self.navigation_slider.setValue(0)
+        self.navigation_slider.setEnabled(False)
+        self.navigation_slider.setToolTip("Przesun widoczne okno sygnalu.")
+        self.navigation_slider.valueChanged.connect(self._emit_playback_position_change)
+
+        transport_bar = QHBoxLayout()
+        transport_bar.setContentsMargins(0, 0, 0, 0)
+        transport_bar.setSpacing(8)
+
+        self.play_button = QPushButton(self)
+        self.pause_button = QPushButton(self)
+        self.stop_button = QPushButton(self)
+        self.play_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
+        self.pause_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPause))
+        self.stop_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaStop))
+        self.play_button.setToolTip("Start")
+        self.pause_button.setToolTip("Pauza")
+        self.stop_button.setToolTip("Stop")
+        self.play_button.clicked.connect(self.play_requested.emit)
+        self.pause_button.clicked.connect(self.pause_requested.emit)
+        self.stop_button.clicked.connect(self.stop_requested.emit)
+        for button in (self.play_button, self.pause_button, self.stop_button):
+            button.setFixedWidth(36)
+            transport_bar.addWidget(button)
+
+        transport_bar.addWidget(self.navigation_slider, stretch=1)
+
+        self.playback_position_label = QLabel("0.0 s / 0.0 s", self)
+        self.playback_position_label.setMinimumWidth(92)
+        self.playback_position_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        transport_bar.addWidget(self.playback_position_label)
+
+        self.playback_speed_combo = QComboBox(self)
+        for label, value in (("0.5x", 0.5), ("1x", 1.0), ("2x", 2.0), ("4x", 4.0)):
+            self.playback_speed_combo.addItem(label, userData=value)
+        self.playback_speed_combo.setCurrentIndex(self.playback_speed_combo.findData(1.0))
+        self.playback_speed_combo.currentIndexChanged.connect(self._emit_playback_speed_change)
+        transport_bar.addWidget(self.playback_speed_combo)
+
+        self.loop_checkbox = QCheckBox("Petla", self)
+        self.loop_checkbox.toggled.connect(self.playback_loop_toggled.emit)
+        transport_bar.addWidget(self.loop_checkbox)
 
         overview_container = QWidget(self)
         overview_layout = QVBoxLayout(overview_container)
@@ -111,6 +166,7 @@ class ECGPlotWidget(QWidget):
         overview_layout.addLayout(self.overview_stack)
 
         layout.addWidget(self.main_plot, stretch=2)
+        layout.addLayout(transport_bar, stretch=0)
         layout.addWidget(overview_container, stretch=1)
 
         self._record: ECGRecord | None = None
@@ -169,6 +225,38 @@ class ECGPlotWidget(QWidget):
         self._cursor_pos = float(record.time_axis[0]) if record else 0.0
         self._last_frequency_cache_key = None
         self._render()
+
+    def set_playback_enabled(self, enabled: bool) -> None:
+        for widget in (
+            self.play_button,
+            self.pause_button,
+            self.stop_button,
+            self.navigation_slider,
+            self.playback_speed_combo,
+            self.loop_checkbox,
+        ):
+            widget.setEnabled(enabled)
+        if not enabled:
+            self.playback_position_label.setText("0.0 s / 0.0 s")
+            self.navigation_slider.blockSignals(True)
+            self.navigation_slider.setValue(0)
+            self.navigation_slider.blockSignals(False)
+
+    def set_playback_position(self, current_time_sec: float, duration_sec: float) -> None:
+        clamped_duration = max(float(duration_sec), 0.0)
+        clamped_time = min(max(float(current_time_sec), 0.0), clamped_duration)
+        self.playback_position_label.setText(f"{clamped_time:.1f} s / {clamped_duration:.1f} s")
+        slider_value = 0
+        if clamped_duration > 0.0:
+            slider_value = int(round((clamped_time / clamped_duration) * self.navigation_slider.maximum()))
+        self.navigation_slider.blockSignals(True)
+        self.navigation_slider.setValue(slider_value)
+        self.navigation_slider.blockSignals(False)
+
+    def set_playback_state(self, state: str) -> None:
+        self.play_button.setProperty("playbackState", state)
+        self.play_button.style().unpolish(self.play_button)
+        self.play_button.style().polish(self.play_button)
 
     def set_raw_visible(self, visible: bool) -> None:
         self._raw_visible = visible
@@ -407,6 +495,16 @@ class ECGPlotWidget(QWidget):
 
     def _on_overview_controls_changed(self, _checked: bool) -> None:
         self._schedule_frequency_overview_update(immediate=True)
+
+    def _emit_playback_position_change(self, slider_value: int) -> None:
+        maximum = max(self.navigation_slider.maximum(), 1)
+        self.playback_position_changed.emit(float(slider_value) / float(maximum))
+
+    def _emit_playback_speed_change(self, _index: int) -> None:
+        speed = self.playback_speed_combo.currentData()
+        if speed is None:
+            return
+        self.playback_speed_changed.emit(float(speed))
 
     def _on_mouse_moved(self, event: tuple[object]) -> None:
         if self._record is None:

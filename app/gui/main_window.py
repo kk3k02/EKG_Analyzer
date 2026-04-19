@@ -205,16 +205,16 @@ class MainWindow(QMainWindow):
         self.controls.go_to_end_requested.connect(self.plot_widget.go_to_end)
         self.controls.sampling_rate_changed.connect(self._override_sampling_rate)
         self.controls.filter_config_changed.connect(self._apply_filter_config)
-        self.controls.play_requested.connect(self._play)
-        self.controls.pause_requested.connect(self._pause)
-        self.controls.stop_requested.connect(self._stop)
-        self.controls.playback_speed_changed.connect(self._set_playback_speed)
-        self.controls.playback_loop_toggled.connect(self._set_playback_loop)
-        self.controls.playback_position_changed.connect(self._seek_playback_fraction)
 
         self.plot_widget.cursor_changed.connect(self._update_cursor_status)
         self.plot_widget.selection_changed.connect(self._update_selection_status)
         self.plot_widget.selection_context_menu_requested.connect(self._open_selection_context_menu)
+        self.plot_widget.play_requested.connect(self._play)
+        self.plot_widget.pause_requested.connect(self._pause)
+        self.plot_widget.stop_requested.connect(self._stop)
+        self.plot_widget.playback_speed_changed.connect(self._set_playback_speed)
+        self.plot_widget.playback_loop_toggled.connect(self._set_playback_loop)
+        self.plot_widget.playback_position_changed.connect(self._seek_playback_fraction)
 
     @staticmethod
     def _sampling_rate_control_state(record: ECGRecord) -> tuple[bool, str]:
@@ -305,7 +305,9 @@ class MainWindow(QMainWindow):
             self.processed_signal = None
             self._update_file_info(None)
             self.controls.set_playback_enabled(False)
+            self.plot_widget.set_playback_enabled(False)
             self.controls.set_playback_position(0.0, 0.0)
+            self.plot_widget.set_playback_position(0.0, 0.0)
             self._set_playback_status("zatrzymane")
             self.plot_widget.set_record(None, None, filtering_active=False)
             self._update_fragment_action_state()
@@ -324,6 +326,7 @@ class MainWindow(QMainWindow):
             filtering_active=self.filter_config.any_enabled(),
         )
         self.controls.set_playback_enabled(self._playback_available())
+        self.plot_widget.set_playback_enabled(self._playback_available())
         self.controls.sync_signal_display_mode(filters_active=self.filter_config.any_enabled())
         self._render_current_window()
         self._update_playback_position_display()
@@ -456,6 +459,7 @@ class MainWindow(QMainWindow):
 
     def _update_playback_position_display(self) -> None:
         self.controls.set_playback_position(self.playback_state.current_time_sec, self._playback_duration_seconds())
+        self.plot_widget.set_playback_position(self.playback_state.current_time_sec, self._playback_duration_seconds())
 
     def _playback_available(self) -> bool:
         if self.current_record is None:
@@ -482,7 +486,7 @@ class MainWindow(QMainWindow):
 
     def _set_playback_status(self, status_text: str) -> None:
         self.playback_status_label.setText(f"Odtwarzanie: {status_text}")
-        self.controls.set_playback_state(status_text.capitalize())
+        self.plot_widget.set_playback_state(status_text.capitalize())
 
     def _update_frequency_analysis_action_state(self) -> None:
         self.frequency_analysis_action.setEnabled(self.current_record is not None)

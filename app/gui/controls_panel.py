@@ -96,7 +96,6 @@ class ControlsPanel(QWidget):
         layout.addWidget(self.filter_group)
 
         self.playback_group = self._build_playback_group()
-        layout.addWidget(self.playback_group)
 
         leads_group = QGroupBox("Odprowadzenia")
         leads_layout = QVBoxLayout(leads_group)
