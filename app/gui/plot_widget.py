@@ -788,7 +788,7 @@ class ECGPlotWidget(QWidget):
         title_action = menu.addAction(f"Adnotacja: '{symbol}'")
         title_action.setEnabled(False)
         menu.addSeparator()
-        remove_action = menu.addAction("🗑  Usuń adnotację")
+        remove_action = menu.addAction("Usuń adnotację")
 
         chosen = menu.exec(global_pos)
         if chosen == remove_action:
