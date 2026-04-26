@@ -196,7 +196,7 @@ class ECGPlotWidget(QWidget):
         self._view_mode = "stacked"
         self._active_lead = 0
         self._lead_visibility: dict[int, bool] = {}
-        self._window_seconds: int | None = 5
+        self._window_seconds: int = 5
         self._monitor_curves: list[pg.PlotDataItem] = []
         self._annotation_items: list[pg.TextItem] = []
         self._overview_plot_item: pg.PlotDataItem | None = None
