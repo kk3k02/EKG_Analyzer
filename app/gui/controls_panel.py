@@ -76,7 +76,6 @@ class ControlsPanel(QWidget):
             ("5 s", 5),
             ("10 s", 10),
             ("30 s", 30),
-            ("Caly", None),
         ):
             button = QPushButton(label)
             button.clicked.connect(
