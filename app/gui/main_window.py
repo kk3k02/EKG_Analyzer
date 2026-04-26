@@ -578,11 +578,7 @@ class MainWindow(QMainWindow):
         if self.current_record is None:
             return PLAYBACK_FALLBACK_WINDOW_SECONDS
         selected_window = self.plot_widget.current_window_seconds()
-        if selected_window is None:
-            return min(
-                PLAYBACK_FALLBACK_WINDOW_SECONDS,
-                max(self._playback_duration_seconds(), 0.1),
-            )
+        
         return min(float(selected_window), max(self._playback_duration_seconds(), 0.1))
 
     def _max_playback_start_time(self) -> float:
