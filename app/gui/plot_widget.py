@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QHBoxLayout,
     QLabel,
+    QMenu,
     QPushButton,
     QSizePolicy,
     QStackedLayout,
@@ -68,6 +69,8 @@ class ECGPlotWidget(QWidget):
     playback_loop_toggled = Signal(bool)
     playback_position_changed = Signal(float)
     visible_time_range_changed = Signal()
+
+    annotations_changed = Signal()
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -237,6 +240,10 @@ class ECGPlotWidget(QWidget):
 
         self._render()
 
+    # ------------------------------------------------------------------ #
+    #  Public API — unchanged                                             #
+    # ------------------------------------------------------------------ #
+
     def set_record(
         self,
         record: ECGRecord | None,
@@ -388,19 +395,46 @@ class ECGPlotWidget(QWidget):
         if self._record.annotations:
             lead_idx = self._active_lead if self._view_mode == "single" else 0
             offset = offsets.get(lead_idx, 0.0)
+
             for ann in self._record.annotations:
                 sample_index = ann.get("sample", 0)
                 if 0 <= sample_index < len(self._record.time_axis):
+                    # Y position is always computed through the shared helper
+                    # so every label — whether loaded from file or added
+                    # interactively — sits at exactly the same height above
+                    # its QRS peak.
+                    y_pos = self._annotation_y_pos(sample_index)
                     txt = pg.TextItem(
                         text=ann.get("symbol", "?"), color="#000000", anchor=(0.5, 1)
                     )
-                    txt.setPos(
-                        float(self._record.time_axis[sample_index]),
-                        float(display_signal[sample_index, lead_idx]) + offset + 0.1,
-                    )
+                    txt.setPos(float(self._record.time_axis[sample_index]), y_pos)
                     txt.hide()
                     self.main_plot.addItem(txt)
                     self._annotation_items.append(txt)
+
+        # Fill curves with data from the currently visible time range so that
+        # a _render() triggered by annotation add/remove doesn't leave the
+        # plot blank.  When playback is active the next _update_revealed_data
+        # call will overwrite this anyway.
+        view_start, view_end = self.main_plot.viewRange()[0]
+        bounded_start = max(float(self._record.time_axis[0]), view_start)
+        bounded_end = min(float(self._record.time_axis[-1]), view_end)
+        if bounded_end > bounded_start:
+            start_idx, end_idx = self._time_range_to_indices(bounded_start, bounded_end)
+            x_data = self._record.time_axis[start_idx:end_idx]
+            for i, lead_idx in enumerate(visible_indices):
+                if i >= len(self._monitor_curves):
+                    break
+                y_data = display_signal[start_idx:end_idx, lead_idx] + offsets.get(
+                    lead_idx, 0.0
+                )
+                self._monitor_curves[i].setData(x_data, y_data)
+
+            # Show annotation labels that fall within the visible range
+            for item in self._annotation_items:
+                pos = item.pos()
+                if bounded_start <= pos.x() <= bounded_end:
+                    item.show()
 
         self._schedule_frequency_overview_update(immediate=True)
 
@@ -573,18 +607,150 @@ class ECGPlotWidget(QWidget):
             )
         )
 
+    # ------------------------------------------------------------------ #
+    #  Annotation helpers                                                  #
+    # ------------------------------------------------------------------ #
+
+    def _annotation_y_pos(self, sample_index: int) -> float:
+        """Return the standardised Y coordinate for an annotation marker.
+
+        Position = signal value at *sample_index* (QRS peak)
+                  + lead offset (stacked mode)
+                  + margin proportional to the lead's amplitude range.
+
+        This guarantees every label sits at the same visual distance above
+        its QRS regardless of zoom level or signal amplitude.
+        """
+        if self._record is None:
+            return 0.0
+        display_signal = self._display_signal()
+        lead_idx = self._active_lead if self._view_mode == "single" else 0
+        visible_indices = self._visible_indices()
+        offsets = self._compute_offsets(display_signal, visible_indices)
+        offset = offsets.get(lead_idx, 0.0)
+        lead_signal = display_signal[:, lead_idx]
+        sig_range = float(np.ptp(lead_signal)) if lead_signal.size > 0 else 1.0
+        ann_margin = sig_range * 0.08
+        return float(display_signal[sample_index, lead_idx]) + offset + ann_margin
+
+    def _snap_to_local_peak(self, sample_index: int) -> int:
+        """Return the index of the local signal maximum in a ±50 ms window
+        around *sample_index*.  Ensures the annotation sits on the actual
+        QRS peak rather than the arbitrary click point within the complex.
+        """
+        if self._record is None:
+            return sample_index
+        half_win = max(1, int(self._record.sampling_rate * 0.05))
+        lo = max(0, sample_index - half_win)
+        hi = min(self._record.n_samples - 1, sample_index + half_win)
+        lead_idx = self._active_lead if self._view_mode == "single" else 0
+        display_signal = self._display_signal()
+        window = display_signal[lo : hi + 1, lead_idx]
+        return int(lo + int(np.argmax(window)))
+
+    def _annotation_near_time(self, x_time: float) -> dict | None:
+        """Return the annotation dict closest to *x_time* if within tolerance,
+        otherwise None.  Tolerance is expressed as a fraction of the visible
+        time window so it scales naturally with zoom level.
+        """
+        if self._record is None or not self._record.annotations:
+            return None
+
+        view_start, view_end = self.main_plot.viewRange()[0]
+        view_width = max(float(view_end - view_start), 1e-6)
+        # Click within 2 % of the current view width counts as "on the annotation"
+        tolerance = view_width * 0.02
+
+        best: dict | None = None
+        best_dist = float("inf")
+        for ann in self._record.annotations:
+            sample_index = ann.get("sample", 0)
+            if 0 <= sample_index < len(self._record.time_axis):
+                ann_time = float(self._record.time_axis[sample_index])
+                dist = abs(ann_time - x_time)
+                if dist < tolerance and dist < best_dist:
+                    best_dist = dist
+                    best = ann
+        return best
+
+    def _add_annotation(self, x_time: float, symbol: str) -> None:
+        """Insert a new annotation at the local QRS peak nearest to *x_time*.
+
+        The click position is first snapped to the highest signal point within
+        a ±50 ms window so the label always lands on the actual QRS peak even
+        when the user clicks somewhere in the middle of the complex.
+        """
+        if self._record is None:
+            return
+        raw_index = int(
+            np.clip(
+                np.searchsorted(self._record.time_axis, x_time),
+                0,
+                self._record.n_samples - 1,
+            )
+        )
+        sample_index = self._snap_to_local_peak(raw_index)
+        new_ann = {"sample": sample_index, "symbol": symbol}
+        annotations = list(self._record.annotations) if self._record.annotations else []
+        # Keep annotations sorted by sample index
+        annotations.append(new_ann)
+        annotations.sort(key=lambda a: a.get("sample", 0))
+        self._record.annotations = annotations
+        self._render()
+        self.annotations_changed.emit()
+
+    def _remove_annotation(self, ann: dict) -> None:
+        """Remove *ann* from the record's annotation list."""
+        if self._record is None or not self._record.annotations:
+            return
+        annotations = [a for a in self._record.annotations if a is not ann]
+        self._record.annotations = annotations
+        self._render()
+        self.annotations_changed.emit()
+
+    # ------------------------------------------------------------------ #
+    #  Mouse event handling                                                #
+    # ------------------------------------------------------------------ #
+
     def _on_mouse_clicked(self, event: tuple[object]) -> None:
         if self._record is None:
             return
 
         mouse_event = event[0]
+
+        # --- Right-click handling ---
         if mouse_event.button() == Qt.MouseButton.RightButton:
-            if self._clicked_inside_selection(mouse_event.scenePos()):
+            pos = mouse_event.scenePos()
+            if not self.main_plot.sceneBoundingRect().contains(pos):
+                return
+
+            # Priority 1: click inside existing selection → existing menu
+            if self._clicked_inside_selection(pos):
                 self.selection_context_menu_requested.emit()
+                mouse_event.accept()
+                return
+
+            # Priority 2: annotation context menu
+            mouse_point = self.main_plot.plotItem.vb.mapSceneToView(pos)
+            x_time = float(mouse_point.x())
+
+            time_axis = self._record.time_axis
+            if x_time < float(time_axis[0]) or x_time > float(time_axis[-1]):
+                mouse_event.accept()
+                return
+
+            ann = self._annotation_near_time(x_time)
+            global_pos = mouse_event.screenPos().toPoint()
+
+            if ann is not None:
+                self._show_annotation_remove_menu(ann, global_pos)
             else:
-                self.clear_selection()
+                self._show_annotation_add_menu(x_time, global_pos)
+
             mouse_event.accept()
             return
+
+        # --- Left-click handling (unchanged) ---
         if mouse_event.button() != Qt.MouseButton.LeftButton:
             return
 
@@ -607,6 +773,55 @@ class ECGPlotWidget(QWidget):
             x_value - (selection_width / 2.0), x_value + (selection_width / 2.0)
         )
         mouse_event.accept()
+
+    def _show_annotation_remove_menu(self, ann: dict, global_pos) -> None:
+        """Show context menu offering to remove an existing annotation."""
+        symbol = ann.get("symbol", "?")
+        menu = QMenu(self)
+        menu.setStyleSheet(
+            "QMenu { background-color: #FFFFFF; border: 1px solid #CFD8DC; border-radius: 6px; padding: 4px; }"
+            "QMenu::item { padding: 6px 20px; font-size: 13px; color: #263238; border-radius: 4px; }"
+            "QMenu::item:selected { background-color: #ECEFF1; }"
+            "QMenu::separator { height: 1px; background: #CFD8DC; margin: 4px 8px; }"
+        )
+
+        title_action = menu.addAction(f"Adnotacja: '{symbol}'")
+        title_action.setEnabled(False)
+        menu.addSeparator()
+        remove_action = menu.addAction("🗑  Usuń adnotację")
+
+        chosen = menu.exec(global_pos)
+        if chosen == remove_action:
+            self._remove_annotation(ann)
+
+    def _show_annotation_add_menu(self, x_time: float, global_pos) -> None:
+        """Show context menu offering to add a new QRS annotation."""
+        menu = QMenu(self)
+        menu.setStyleSheet(
+            "QMenu { background-color: #FFFFFF; border: 1px solid #CFD8DC; border-radius: 6px; padding: 4px; }"
+            "QMenu::item { padding: 6px 20px; font-size: 13px; color: #263238; border-radius: 4px; }"
+            "QMenu::item:selected { background-color: #ECEFF1; }"
+            "QMenu::separator { height: 1px; background: #CFD8DC; margin: 4px 8px; }"
+        )
+
+        title_action = menu.addAction("Dodaj adnotację QRS")
+        title_action.setEnabled(False)
+        menu.addSeparator()
+
+        symbols = [
+            ("N", "Rytm zatokowy normalny"),
+            ("A", "Pobudzenie nadkomorowe (SVE)"),
+            ("V", "Pobudzenie komorowe (VE)"),
+            ("Q", "Nie do sklasyfikowania"),
+        ]
+        actions = {}
+        for sym, desc in symbols:
+            action = menu.addAction(f"Dodaj '{sym}'  —  {desc}")
+            actions[action] = sym
+
+        chosen = menu.exec(global_pos)
+        if chosen in actions:
+            self._add_annotation(x_time, actions[chosen])
 
     def _clicked_inside_selection(self, scene_pos) -> bool:
         selected_range = self.selected_time_range()
