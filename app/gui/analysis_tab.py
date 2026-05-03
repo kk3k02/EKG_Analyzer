@@ -10,6 +10,7 @@ from pyqtgraph.exporters import ImageExporter
 from PySide6.QtCore import QRectF
 from PySide6.QtWidgets import (
     QComboBox,
+    QFrame,
     QFileDialog,
     QFormLayout,
     QGroupBox,
@@ -75,8 +76,11 @@ class FrequencyAnalysisDialog(QWidget):
         self.controls_container.setMaximumWidth(380)
 
         controls_layout.addWidget(self._build_signal_group())
+        controls_layout.addWidget(self._build_section_separator())
         controls_layout.addWidget(self._build_psd_group())
+        controls_layout.addWidget(self._build_section_separator())
         controls_layout.addWidget(self._build_stft_group())
+        controls_layout.addWidget(self._build_section_separator())
 
         self.message_label = QLabel("Wybierz parametry i kliknij Przelicz.", self)
         self.message_label.setWordWrap(True)
@@ -131,6 +135,16 @@ class FrequencyAnalysisDialog(QWidget):
 
     def analysis_controls_widget(self) -> QWidget:
         return self.controls_container
+
+    def _build_section_separator(self) -> QFrame:
+        separator = QFrame(self.controls_container)
+        separator.setFrameShape(QFrame.Shape.HLine)
+        separator.setFrameShadow(QFrame.Shadow.Plain)
+        separator.setFixedHeight(10)
+        separator.setStyleSheet(
+            "QFrame { color: #8FA3B8; background-color: #8FA3B8; min-height: 3px; max-height: 3px; border: none; }"
+        )
+        return separator
 
     def update_input_data(self, analysis_input: FrequencyAnalysisInput) -> None:
         """Refresh dialog state after loading another record or changing filters."""

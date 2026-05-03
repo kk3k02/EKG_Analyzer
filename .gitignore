@@ -11,4 +11,7 @@ tmp*/
 htmlcov/
 dist/
 build/
+build_pyinstaller/
+release/
 *.egg-info/
+models/
