@@ -106,7 +106,9 @@ class ECGPlotWidget(QWidget):
         self.empty_state_overlay.setAttribute(
             Qt.WidgetAttribute.WA_StyledBackground, True
         )
-        self.empty_state_overlay.setStyleSheet("background: transparent;")
+        self.empty_state_overlay.setStyleSheet(
+            "background-color: rgba(232, 236, 240, 0.88);"
+        )
         empty_state_layout = QVBoxLayout(self.empty_state_overlay)
         empty_state_layout.setContentsMargins(24, 24, 24, 24)
         empty_state_layout.setSpacing(12)
@@ -117,10 +119,10 @@ class ECGPlotWidget(QWidget):
         self.empty_state_button.setMinimumWidth(180)
         self.empty_state_button.setMinimumHeight(48)
         self.empty_state_button.setStyleSheet(
-            "QPushButton { background-color: rgba(255, 255, 255, 0.96); border: 1px solid #CFD8DC; "
-            "border-radius: 10px; padding: 10px 18px; font-size: 15px; font-weight: 600; color: #263238; } "
-            "QPushButton:hover { background-color: rgba(255, 255, 255, 1.0); border-color: #90A4AE; } "
-            "QPushButton:pressed { background-color: rgba(236, 239, 241, 1.0); }"
+            "QPushButton { background-color: #2EAD4A; border: 1px solid #24913D; "
+            "border-radius: 10px; padding: 10px 18px; font-size: 15px; font-weight: 700; color: white; } "
+            "QPushButton:hover { background-color: #26953F; border-color: #1E7832; } "
+            "QPushButton:pressed { background-color: #1F7E35; }"
         )
         self.empty_state_button.clicked.connect(self.load_requested.emit)
         empty_state_layout.addWidget(
@@ -153,6 +155,7 @@ class ECGPlotWidget(QWidget):
         overview_layout = QVBoxLayout(overview_container)
         overview_layout.setContentsMargins(0, 0, 0, 0)
         overview_layout.setSpacing(4)
+        self.overview_container = overview_container
 
         overview_header = QHBoxLayout()
         overview_header.setContentsMargins(0, 0, 0, 0)
@@ -265,6 +268,13 @@ class ECGPlotWidget(QWidget):
     def set_playback_enabled(self, enabled: bool) -> None:
         self.playback_controls.set_playback_enabled(enabled)
 
+    def set_preload_state(self, preload: bool) -> None:
+        self.main_plot.setEnabled(not preload)
+        self.playback_controls.setEnabled(not preload)
+        self.overview_container.setEnabled(not preload)
+        self.log_scale_checkbox.setEnabled(not preload)
+        self.empty_state_button.setEnabled(True)
+
     def set_playback_position(
         self, current_time_sec: float, duration_sec: float
     ) -> None:
@@ -354,6 +364,7 @@ class ECGPlotWidget(QWidget):
                 item.hide()
 
     def _render(self) -> None:
+        previous_visible_range = self.visible_time_range()
         self.main_plot.clear()
         self._monitor_curves.clear()
         self._annotation_items.clear()
@@ -416,9 +427,13 @@ class ECGPlotWidget(QWidget):
         # a _render() triggered by annotation add/remove doesn't leave the
         # plot blank.  When playback is active the next _update_revealed_data
         # call will overwrite this anyway.
-        view_start, view_end = self.main_plot.viewRange()[0]
-        bounded_start = max(float(self._record.time_axis[0]), view_start)
-        bounded_end = min(float(self._record.time_axis[-1]), view_end)
+        if previous_visible_range is not None:
+            bounded_start, bounded_end = previous_visible_range
+            self.main_plot.setXRange(bounded_start, bounded_end, padding=0.0)
+        else:
+            view_start, view_end = self.main_plot.viewRange()[0]
+            bounded_start = max(float(self._record.time_axis[0]), view_start)
+            bounded_end = min(float(self._record.time_axis[-1]), view_end)
         if bounded_end > bounded_start:
             start_idx, end_idx = self._time_range_to_indices(bounded_start, bounded_end)
             x_data = self._record.time_axis[start_idx:end_idx]

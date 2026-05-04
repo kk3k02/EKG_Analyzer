@@ -1,37 +1,27 @@
 from __future__ import annotations
 
-from PySide6.QtCore import QSize, Qt, Signal
-from PySide6.QtGui import QColor, QIcon, QPainter
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QButtonGroup,
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
+    QFormLayout,
+    QFrame,
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QListWidget,
     QListWidgetItem,
-    QMenu,
     QPushButton,
-    QRadioButton,
-    QSlider,
     QSizePolicy,
-    QStyle,
-    QToolButton,
     QVBoxLayout,
-    QWidgetAction,
     QWidget,
-    QFormLayout,
 )
 
-from app.gui.time_utils import format_playback_clock
 from app.services.preprocessing import SignalFilterConfig, default_filter_config
 
 
 class ControlsPanel(QWidget):
-    view_mode_changed = Signal(str)
-    active_lead_changed = Signal(int)
     lead_visibility_changed = Signal(object)
     window_preset_selected = Signal(object)
     reset_view_requested = Signal()
@@ -40,14 +30,6 @@ class ControlsPanel(QWidget):
     filtered_toggled = Signal(bool)
     sampling_rate_changed = Signal(float)
     filter_config_changed = Signal(object)
-    play_requested = Signal()
-    pause_requested = Signal()
-    stop_requested = Signal()
-    step_backward_requested = Signal()
-    step_forward_requested = Signal()
-    playback_speed_changed = Signal(float)
-    playback_loop_toggled = Signal(bool)
-    playback_position_changed = Signal(float)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -71,20 +53,14 @@ class ControlsPanel(QWidget):
 
         preset_group = QGroupBox("Okno czasu")
         preset_layout = QHBoxLayout(preset_group)
-        for label, value in (
-            ("2 s", 2),
-            ("5 s", 5),
-            ("10 s", 10),
-            ("30 s", 30),
-        ):
+        for label, value in (("2 s", 2), ("5 s", 5), ("10 s", 10), ("30 s", 30)):
             button = QPushButton(label)
             button.clicked.connect(
                 lambda checked=False, v=value: self.window_preset_selected.emit(v)
             )
             preset_layout.addWidget(button)
         layout.addWidget(preset_group)
-
-        self.playback_group = self._build_playback_group()
+        layout.addWidget(self._build_section_separator())
 
         leads_group = QGroupBox("Odprowadzenia")
         leads_layout = QVBoxLayout(leads_group)
@@ -93,27 +69,7 @@ class ControlsPanel(QWidget):
         self.leads_list.itemChanged.connect(self._emit_visibility)
         leads_layout.addWidget(self.leads_list)
         layout.addWidget(leads_group)
-
-        mode_group = QGroupBox("Tryb widoku")
-        mode_layout = QVBoxLayout(mode_group)
-        self.stacked_radio = QRadioButton("Widok wieloodprowadzeniowy")
-        self.single_radio = QRadioButton("Skupienie na jednym odprowadzeniu")
-        self.stacked_radio.setChecked(True)
-        self.mode_buttons = QButtonGroup(self)
-        self.mode_buttons.addButton(self.stacked_radio)
-        self.mode_buttons.addButton(self.single_radio)
-        self.stacked_radio.toggled.connect(self._emit_view_mode)
-        self.single_radio.toggled.connect(self._emit_view_mode)
-        mode_layout.addWidget(self.stacked_radio)
-        mode_layout.addWidget(self.single_radio)
-        layout.addWidget(mode_group)
-
-        self.active_lead_combo = QComboBox(self)
-        self.active_lead_combo.currentIndexChanged.connect(
-            self.active_lead_changed.emit
-        )
-        layout.addWidget(QLabel("Aktywne odprowadzenie"))
-        layout.addWidget(self.active_lead_combo)
+        layout.addWidget(self._build_section_separator())
 
         layout.addWidget(self.sampling_rate_label)
         layout.addWidget(self.sampling_rate_spin)
@@ -135,6 +91,7 @@ class ControlsPanel(QWidget):
         self.raw_checkbox = QCheckBox("Pokaz surowy sygnal jako nakladke")
         self.raw_checkbox.toggled.connect(self.raw_toggled.emit)
         layout.addWidget(self.raw_checkbox)
+        layout.addWidget(self._build_section_separator())
 
         self.filter_section_checkbox = QCheckBox("Filtrowanie")
         self.filter_section_checkbox.setChecked(False)
@@ -149,23 +106,25 @@ class ControlsPanel(QWidget):
         layout.addStretch(1)
         self._sync_filter_controls()
         self._toggle_filter_group_visibility(self.filter_section_checkbox.isChecked())
-        self.set_playback_enabled(False)
 
     def set_leads(self, lead_names: list[str]) -> None:
         self.leads_list.blockSignals(True)
-        self.active_lead_combo.blockSignals(True)
         self.leads_list.clear()
-        self.active_lead_combo.clear()
         for index, name in enumerate(lead_names):
             item = QListWidgetItem(name)
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
             item.setCheckState(Qt.CheckState.Checked)
             item.setData(Qt.ItemDataRole.UserRole, index)
             self.leads_list.addItem(item)
-            self.active_lead_combo.addItem(name, userData=index)
         self.leads_list.blockSignals(False)
-        self.active_lead_combo.blockSignals(False)
         self._emit_visibility()
+
+    def primary_selected_lead_index(self) -> int:
+        for row in range(self.leads_list.count()):
+            item = self.leads_list.item(row)
+            if item.checkState() == Qt.CheckState.Checked:
+                return int(item.data(Qt.ItemDataRole.UserRole))
+        return 0
 
     def set_sampling_rate_controls(
         self, sampling_rate: float, enabled: bool, tooltip: str
@@ -213,46 +172,18 @@ class ControlsPanel(QWidget):
         self.filtered_toggled.emit(self.filtered_checkbox.isChecked())
         self.raw_toggled.emit(self.raw_checkbox.isChecked())
 
-    def set_playback_enabled(self, enabled: bool) -> None:
-        for widget in (
-            self.play_button,
-            self.pause_button,
-            self.step_backward_button,
-            self.stop_button,
-            self.step_forward_button,
-            self.playback_slider,
-            self.playback_settings_button,
-        ):
-            widget.setEnabled(enabled)
-        self.playback_speed_combo.setEnabled(enabled)
-        self.loop_checkbox.setEnabled(enabled)
-        if not enabled:
-            self.playback_position_label.setText("00:00 / 00:00")
-            self.playback_slider.blockSignals(True)
-            self.playback_slider.setValue(0)
-            self.playback_slider.blockSignals(False)
+    def set_disease_detection_enabled(self, enabled: bool) -> None:
+        self.disease_detection_button.setEnabled(enabled)
 
-    def set_playback_position(
-        self, current_time_sec: float, duration_sec: float
-    ) -> None:
-        clamped_duration = max(duration_sec, 0.0)
-        clamped_time = min(max(current_time_sec, 0.0), clamped_duration)
-        self.playback_position_label.setText(
-            f"{format_playback_clock(clamped_time)} / {format_playback_clock(clamped_duration)}"
+    def _build_section_separator(self) -> QFrame:
+        separator = QFrame(self)
+        separator.setFrameShape(QFrame.Shape.HLine)
+        separator.setFrameShadow(QFrame.Shadow.Plain)
+        separator.setFixedHeight(10)
+        separator.setStyleSheet(
+            "QFrame { color: #8FA3B8; background-color: #8FA3B8; min-height: 3px; max-height: 3px; border: none; }"
         )
-        slider_value = 0
-        if clamped_duration > 0:
-            slider_value = int(
-                round(
-                    (clamped_time / clamped_duration) * self.playback_slider.maximum()
-                )
-            )
-        self.playback_slider.blockSignals(True)
-        self.playback_slider.setValue(slider_value)
-        self.playback_slider.blockSignals(False)
-
-    def set_playback_state(self, state: str) -> None:
-        self.playback_state_label.setText(f"Stan: {state}")
+        return separator
 
     def _build_filter_group(self) -> QGroupBox:
         group = QGroupBox("Filtrowanie sygnalu")
@@ -335,161 +266,6 @@ class ControlsPanel(QWidget):
         layout.addWidget(self.reset_filters_button)
         return group
 
-    def _build_playback_group(self) -> QGroupBox:
-        group = QGroupBox("Sterowanie odtwarzaniem")
-        layout = QVBoxLayout(group)
-        layout.setSpacing(6)
-
-        buttons_layout = QHBoxLayout()
-        icon_size = QSize(18, 18)
-        self.play_button = QPushButton()
-        self.pause_button = QPushButton()
-        self.step_backward_button = QPushButton()
-        self.stop_button = QPushButton()
-        self.step_forward_button = QPushButton()
-        self.play_button.setIcon(
-            self._make_tinted_standard_icon(
-                QStyle.StandardPixmap.SP_MediaPlay, "#FFFFFF"
-            )
-        )
-        self.pause_button.setIcon(
-            self._make_tinted_standard_icon(
-                QStyle.StandardPixmap.SP_MediaPause, "#FFFFFF"
-            )
-        )
-        self.step_backward_button.setIcon(
-            self._make_tinted_standard_icon(
-                QStyle.StandardPixmap.SP_MediaSeekBackward, "#FFFFFF"
-            )
-        )
-        self.stop_button.setIcon(
-            self._make_tinted_standard_icon(
-                QStyle.StandardPixmap.SP_MediaStop, "#FFFFFF"
-            )
-        )
-        self.step_forward_button.setIcon(
-            self._make_tinted_standard_icon(
-                QStyle.StandardPixmap.SP_MediaSeekForward, "#FFFFFF"
-            )
-        )
-        self.play_button.setIconSize(icon_size)
-        self.pause_button.setIconSize(icon_size)
-        self.step_backward_button.setIconSize(icon_size)
-        self.stop_button.setIconSize(icon_size)
-        self.step_forward_button.setIconSize(icon_size)
-        self.play_button.setToolTip("Start")
-        self.pause_button.setToolTip("Pauza")
-        self.step_backward_button.setToolTip("Wstecz")
-        self.stop_button.setToolTip("Stop")
-        self.step_forward_button.setToolTip("Do przodu")
-        self.play_button.setAccessibleName("Start")
-        self.pause_button.setAccessibleName("Pauza")
-        self.step_backward_button.setAccessibleName("Wstecz")
-        self.stop_button.setAccessibleName("Stop")
-        self.step_forward_button.setAccessibleName("Do przodu")
-        self.play_button.clicked.connect(self.play_requested.emit)
-        self.pause_button.clicked.connect(self.pause_requested.emit)
-        self.step_backward_button.clicked.connect(self.step_backward_requested.emit)
-        self.stop_button.clicked.connect(self.stop_requested.emit)
-        self.step_forward_button.clicked.connect(self.step_forward_requested.emit)
-        for button in (
-            self.play_button,
-            self.pause_button,
-            self.step_backward_button,
-            self.stop_button,
-            self.step_forward_button,
-        ):
-            button.setFixedWidth(42)
-            button.setStyleSheet(
-                "QPushButton { background-color: #263238; border: 1px solid #263238; "
-                "border-radius: 6px; padding: 6px; } "
-                "QPushButton:disabled { background-color: #CFD8DC; border-color: #CFD8DC; }"
-            )
-        buttons_layout.addWidget(self.play_button)
-        buttons_layout.addWidget(self.pause_button)
-        buttons_layout.addSpacing(12)
-        buttons_layout.addWidget(self.step_backward_button)
-        buttons_layout.addWidget(self.stop_button)
-        buttons_layout.addWidget(self.step_forward_button)
-        layout.addLayout(buttons_layout)
-
-        self.playback_state_label = QLabel("Stan: Zatrzymane")
-        self.playback_position_label = QLabel("00:00 / 00:00")
-        layout.addWidget(self.playback_state_label)
-        layout.addWidget(self.playback_position_label)
-
-        self.playback_slider = QSlider(Qt.Orientation.Horizontal, self)
-        self.playback_slider.setRange(0, 1000)
-        self.playback_slider.setSingleStep(1)
-        self.playback_slider.sliderMoved.connect(self._emit_playback_position)
-        layout.addWidget(self.playback_slider)
-
-        self.playback_speed_combo = QComboBox(self)
-        for label, value in (("0.5x", 0.5), ("1x", 1.0), ("2x", 2.0), ("4x", 4.0)):
-            self.playback_speed_combo.addItem(label, userData=value)
-        self.playback_speed_combo.setCurrentIndex(
-            self.playback_speed_combo.findData(1.0)
-        )
-        self.playback_speed_combo.currentIndexChanged.connect(self._emit_playback_speed)
-
-        self.loop_checkbox = QCheckBox("Petla")
-        self.loop_checkbox.toggled.connect(self.playback_loop_toggled.emit)
-
-        self.playback_settings_button = QToolButton(self)
-        self.playback_settings_button.setPopupMode(
-            QToolButton.ToolButtonPopupMode.InstantPopup
-        )
-        self.playback_settings_button.setToolButtonStyle(
-            Qt.ToolButtonStyle.ToolButtonTextOnly
-        )
-        self.playback_settings_button.setToolTip("Ustawienia odtwarzania")
-        self.playback_settings_button.setText("Ustawienia")
-        self.playback_settings_button.setStyleSheet(
-            "QToolButton { background-color: #263238; border: 1px solid #263238; "
-            "border-radius: 6px; padding: 6px; color: #FFFFFF; } "
-            "QToolButton:disabled { background-color: #CFD8DC; border-color: #CFD8DC; color: #546E7A; }"
-        )
-
-        self.playback_settings_menu = QMenu(self.playback_settings_button)
-        settings_container = QWidget(self.playback_settings_menu)
-        settings_layout = QVBoxLayout(settings_container)
-        settings_layout.setContentsMargins(10, 10, 10, 10)
-        settings_layout.setSpacing(8)
-        self.loop_checkbox.setText("")
-
-        playback_speed_row = QHBoxLayout()
-        playback_speed_row.setContentsMargins(0, 0, 0, 0)
-        playback_speed_row.setSpacing(12)
-        playback_speed_label = QLabel("Prędkość", settings_container)
-        playback_speed_label.setAlignment(
-            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
-        )
-        playback_speed_row.addWidget(playback_speed_label)
-        playback_speed_row.addStretch(1)
-        playback_speed_row.addWidget(
-            self.playback_speed_combo, alignment=Qt.AlignmentFlag.AlignRight
-        )
-        settings_layout.addLayout(playback_speed_row)
-
-        loop_row = QHBoxLayout()
-        loop_row.setContentsMargins(0, 0, 0, 0)
-        loop_row.setSpacing(12)
-        loop_label = QLabel("Pętla", settings_container)
-        loop_label.setAlignment(
-            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
-        )
-        loop_row.addWidget(loop_label)
-        loop_row.addStretch(1)
-        loop_row.addWidget(self.loop_checkbox, alignment=Qt.AlignmentFlag.AlignRight)
-        settings_layout.addLayout(loop_row)
-
-        settings_action = QWidgetAction(self.playback_settings_menu)
-        settings_action.setDefaultWidget(settings_container)
-        self.playback_settings_menu.addAction(settings_action)
-        self.playback_settings_button.setMenu(self.playback_settings_menu)
-        layout.addWidget(self.playback_settings_button)
-        return group
-
     def _make_frequency_spin(self, *, DEFAULT: float) -> QDoubleSpinBox:
         spin = QDoubleSpinBox(self)
         spin.setRange(0.01, 1000.0)
@@ -507,11 +283,6 @@ class ControlsPanel(QWidget):
                 item.checkState() == Qt.CheckState.Checked
             )
         self.lead_visibility_changed.emit(visibility)
-
-    def _emit_view_mode(self) -> None:
-        mode = "single" if self.single_radio.isChecked() else "stacked"
-        self.active_lead_combo.setEnabled(mode == "single")
-        self.view_mode_changed.emit(mode)
 
     def _toggle_filter_group_visibility(self, visible: bool) -> None:
         self.filter_group.setVisible(visible)
@@ -603,22 +374,3 @@ class ControlsPanel(QWidget):
         self._filter_config = defaults
         self._sync_filter_controls()
         self.filter_config_changed.emit(self.filter_config())
-
-    def _emit_playback_speed(self) -> None:
-        self.playback_speed_changed.emit(float(self.playback_speed_combo.currentData()))
-
-    def _emit_playback_position(self, slider_value: int) -> None:
-        duration_fraction = slider_value / max(self.playback_slider.maximum(), 1)
-        self.playback_position_changed.emit(duration_fraction)
-
-    def _make_tinted_standard_icon(
-        self, standard_pixmap: QStyle.StandardPixmap, color_hex: str
-    ) -> QIcon:
-        base_icon = self.style().standardIcon(standard_pixmap)
-        pixmap = base_icon.pixmap(24, 24)
-        tinted = pixmap.copy()
-        painter = QPainter(tinted)
-        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
-        painter.fillRect(tinted.rect(), QColor(color_hex))
-        painter.end()
-        return QIcon(tinted)

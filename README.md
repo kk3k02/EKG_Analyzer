@@ -429,6 +429,31 @@ Program obecnie:
 - nie zapisuje przetworzonego sygnalu do nowego pliku,
 - nie implementuje jeszcze pelnej klinicznej pracy na adnotacjach.
 
+## Pomocnicza analiza schorzen ML
+
+Aktualna wersja zawiera pomocniczy modul klasyfikacji trzech klas: `ARR`, `CHF` i `NSR`.
+
+- analiza korzysta z modeli `Random Forest`, `SVM` i `1D CNN`, jesli ich pliki sa dostepne w katalogu `models/`,
+- wejscie do modelu jest budowane z 10-sekundowych segmentow po resamplingu do `360 Hz`,
+- cechy obejmuja pasma mocy Welch PSD, statystyki PSD i 30 wspolczynnikow FFT,
+- wynik jest agregowany glosowaniem wiekszosciowym po segmentach i modelach.
+
+W GUI funkcja jest dostepna przez przycisk `Wykryj schorzenia`. Jesli modele nie sa dostepne, aplikacja pokazuje instrukcje zamiast przerywac prace.
+
+To nadal nie jest modul diagnostyczny. Wynik ma charakter pomocniczy i wymaga interpretacji lekarza.
+
+## Eksport modeli z notatnika
+
+Po treningu w Colabie lub Jupyterze uruchom:
+
+```python
+from save_models import save_models
+
+save_models(rf, svm, scaler, cnn, X_train_sc, classes)
+```
+
+Nastepnie skopiuj lokalnie katalog `models/` do katalogu glownego projektu. Pliki modeli nie sa commitowane do repozytorium i `models/` jest dodane do `.gitignore`.
+
 Dodatkowo w kodzie sa elementy przygotowane, ale jeszcze nieukonczone:
 
 - przyciski `Poczatek` i `Koniec` sa podlaczone w GUI, ale metody `go_to_start()` i `go_to_end()` w `plot_widget.py` sa jeszcze puste,

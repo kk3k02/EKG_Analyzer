@@ -8,6 +8,7 @@ import numpy as np
 from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, QTimer, Signal
 from PySide6.QtGui import QAction, QGuiApplication
 from PySide6.QtWidgets import (
+    QApplication,
     QFileDialog,
     QHBoxLayout,
     QLabel,
@@ -25,8 +26,14 @@ from PySide6.QtWidgets import (
 )
 
 from app.gui.controls_panel import ControlsPanel
-from app.gui.dialogs import MetadataDialog, SamplingRateDialog
+from app.gui.dialogs import (
+    DiseaseResultDialog,
+    MetadataDialog,
+    SamplingRateDialog,
+    WaitPopupDialog,
+)
 from app.gui.analysis_tab import FrequencyAnalysisDialog, FrequencyAnalysisInput
+from app.gui.ml_analysis_tab import MLAnalysisTab
 from app.gui.plot_widget import CursorInfo, ECGPlotWidget
 from app.io.store_factory import StoreFactory
 from app.models.ecg_record import ECGRecord
@@ -90,6 +97,9 @@ class MainWindow(QMainWindow):
         self.current_record: ECGRecord | None = None
         self.processed_signal: np.ndarray | None = None
         self._frequency_analysis_panel: FrequencyAnalysisDialog | None = None
+        self._preload_ui_active = True
+        self._wait_popup_depth = 0
+        self._wait_dialog: WaitPopupDialog | None = None
         self.filter_config: SignalFilterConfig = default_filter_config()
         self.playback_state = PlaybackState()
         self.playback_timer = QTimer(self)
@@ -160,8 +170,12 @@ class MainWindow(QMainWindow):
         self.analysis_placeholder.setStyleSheet("color: #666666;")
         self.analysis_tab_layout.addWidget(self.analysis_placeholder)
 
+        self.ml_tab = MLAnalysisTab(self)
+
         self.ecg_tab_index = self.content_tabs.addTab(self.ecg_tab, "EKG")
         self.analysis_tab_index = self.content_tabs.addTab(self.analysis_tab, "Analiza")
+        self.ml_tab_index = self.content_tabs.addTab(self.ml_tab, "Analiza ML")
+
         self.info_button = QPushButton("Informacje", self)
         self.info_button.setEnabled(False)
         self.info_button.clicked.connect(self._open_metadata_dialog)
@@ -179,8 +193,8 @@ class MainWindow(QMainWindow):
         self.cursor_label = QLabel("Kursor: -")
         self.selection_label = QLabel("Zaznaczenie techniczne: -")
         self.selection_label.setToolTip(
-            "Techniczne statystyki jednego odprowadzenia: aktywnego w trybie single "
-            "albo najblizszego interakcji w trybie stacked. Bez adnotacji klinicznych, "
+            "Techniczne statystyki dla odprowadzenia wynikajacego z biezacego widoku "
+            "i zaznaczenia na wykresie. Bez adnotacji klinicznych, "
             "detekcji zalamkow i analizy wieloodprowadzeniowej."
         )
         self.status_bar.addWidget(self.file_info_label, stretch=2)
@@ -191,8 +205,9 @@ class MainWindow(QMainWindow):
         self._connect_signals()
         self._apply_screen_adaptive_geometry()
         self.controls.sync_signal_display_mode(filters_active=False)
-        self._update_frequency_analysis_action_state()
+        self._update_analysis_tabs_state()
         self._sync_sidebar_to_current_tab(self.content_tabs.currentIndex())
+        self._set_preload_ui_state(True)
 
     def _build_menu(self) -> None:
         menu_bar = self.menuBar()
@@ -229,26 +244,14 @@ class MainWindow(QMainWindow):
     def _connect_signals(self) -> None:
         self.content_tabs.currentChanged.connect(self._sync_sidebar_to_current_tab)
         self.plot_widget.load_requested.connect(self._choose_file)
-        self.controls.view_mode_changed.connect(self.plot_widget.set_view_mode)
-        self.controls.active_lead_changed.connect(self.plot_widget.set_active_lead)
-        self.controls.lead_visibility_changed.connect(
-            self.plot_widget.set_lead_visibility
-        )
+        self.controls.lead_visibility_changed.connect(self._set_lead_visibility_with_wait)
         self.controls.window_preset_selected.connect(self._set_window_preset)
-        self.controls.reset_view_requested.connect(self.plot_widget.reset_view)
+        self.controls.reset_view_requested.connect(self._reset_view_with_wait)
         self.controls.grid_toggled.connect(self.plot_widget.set_grid_visible)
-        self.controls.raw_toggled.connect(self.plot_widget.set_raw_visible)
-        self.controls.filtered_toggled.connect(self.plot_widget.set_filtered_visible)
+        self.controls.raw_toggled.connect(self._set_raw_visible_with_wait)
+        self.controls.filtered_toggled.connect(self._set_filtered_visible_with_wait)
         self.controls.sampling_rate_changed.connect(self._override_sampling_rate)
         self.controls.filter_config_changed.connect(self._apply_filter_config)
-        self.controls.play_requested.connect(self._play)
-        self.controls.pause_requested.connect(self._pause)
-        self.controls.step_backward_requested.connect(self._step_backward)
-        self.controls.stop_requested.connect(self._stop)
-        self.controls.step_forward_requested.connect(self._step_forward)
-        self.controls.playback_speed_changed.connect(self._set_playback_speed)
-        self.controls.playback_loop_toggled.connect(self._set_playback_loop)
-        self.controls.playback_position_changed.connect(self._seek_playback_fraction)
 
         self.plot_widget.cursor_changed.connect(self._update_cursor_status)
         self.plot_widget.selection_changed.connect(self._update_selection_status)
@@ -297,6 +300,7 @@ class MainWindow(QMainWindow):
         if not file_path:
             return
         self.status_bar.showMessage("Ladowanie pliku...", 5000)
+        self._show_wait_popup()
         task = LoadFileTask(file_path)
         task.signals.finished.connect(self._handle_loaded_record)
         task.signals.failed.connect(self._handle_load_error)
@@ -316,6 +320,7 @@ class MainWindow(QMainWindow):
         self.metadata_dialog.set_record(record)
         self._update_file_info(record)
         self.controls.set_leads(record.lead_names)
+        self.ml_tab.update_record(record)
         sampling_rate_enabled, sampling_rate_tooltip = (
             self._sampling_rate_control_state(record)
         )
@@ -328,9 +333,15 @@ class MainWindow(QMainWindow):
         self._refresh_frequency_analysis_dialog()
         self.selection_label.setText("Zaznaczenie techniczne: -")
         self._update_fragment_action_state()
+        self._set_preload_ui_state(False)
         self.status_bar.showMessage(f"Wczytano {record.file_name}", 5000)
+        QApplication.processEvents()
+        self._close_wait_popup()
 
     def _handle_load_error(self, message: str) -> None:
+        self._set_preload_ui_state(True)
+        self._close_wait_popup()
+        self.ml_tab.update_record(None)
         QMessageBox.critical(self, "Blad odczytu", message)
         self.status_bar.showMessage("Nie udalo sie wczytac pliku.", 5000)
 
@@ -341,38 +352,44 @@ class MainWindow(QMainWindow):
         if not enabled:
             self.status_bar.showMessage(tooltip, 7000)
             return
-        self.current_record = self._build_record_with_sampling_rate(
-            self.current_record, value
-        )
-        self.metadata_dialog.set_record(self.current_record)
-        self.controls.set_sampling_rate_controls(
-            self.current_record.sampling_rate,
-            enabled=True,
-            tooltip=self._sampling_rate_control_state(self.current_record)[1],
-        )
-        self._refresh_processed_signal()
+        def update_sampling_rate() -> None:
+            self.current_record = self._build_record_with_sampling_rate(
+                self.current_record, value
+            )
+            self.metadata_dialog.set_record(self.current_record)
+            self.controls.set_sampling_rate_controls(
+                self.current_record.sampling_rate,
+                enabled=True,
+                tooltip=self._sampling_rate_control_state(self.current_record)[1],
+            )
+            self._refresh_processed_signal()
+            self.ml_tab.update_record(self.current_record)
+
+        self._run_with_wait_popup(update_sampling_rate)
         self.status_bar.showMessage(
             "Zaktualizowano sampling rate dla tabelarycznego CSV/TXT bez osi czasu.",
             5000,
         )
 
     def _apply_filter_config(self, config: SignalFilterConfig) -> None:
-        self.filter_config = config
-        self._refresh_processed_signal()
+        def apply_filter() -> None:
+            self.filter_config = config
+            self._refresh_processed_signal()
+
+        self._run_with_wait_popup(apply_filter)
 
     def _refresh_processed_signal(self) -> None:
         if self.current_record is None:
             self.processed_signal = None
             self._update_file_info(None)
             self._update_info_button_state()
-            self.controls.set_playback_enabled(False)
             self.plot_widget.set_playback_enabled(False)
-            self.controls.set_playback_position(0.0, 0.0)
             self.plot_widget.set_playback_position(0.0, 0.0)
             self._set_playback_status("zatrzymane")
             self.plot_widget.set_record(None, None, filtering_active=False)
             self._update_fragment_action_state()
-            self._update_frequency_analysis_action_state()
+            self._update_analysis_tabs_state()
+            self.ml_tab.update_record(None)
             return
         with warnings.catch_warnings(record=True) as captured_warnings:
             warnings.simplefilter("always", RuntimeWarning)
@@ -386,7 +403,6 @@ class MainWindow(QMainWindow):
             self.processed_signal,
             filtering_active=self.filter_config.any_enabled(),
         )
-        self.controls.set_playback_enabled(self._playback_available())
         self.plot_widget.set_playback_enabled(self._playback_available())
         self.controls.sync_signal_display_mode(
             filters_active=self.filter_config.any_enabled()
@@ -395,7 +411,9 @@ class MainWindow(QMainWindow):
         self._render_current_window()
         self._update_playback_position_display()
         self._update_fragment_action_state()
-        self._update_frequency_analysis_action_state()
+        self._update_analysis_tabs_state()
+        self.ml_tab.update_record(self.current_record)
+
         if captured_warnings:
             self.status_bar.showMessage(str(captured_warnings[-1].message), 7000)
 
@@ -403,8 +421,73 @@ class MainWindow(QMainWindow):
         self.metadata_dialog.set_record(self.current_record)
         self.metadata_dialog.exec()
 
+    def _show_wait_popup(self) -> None:
+        self._wait_popup_depth += 1
+        if self._wait_popup_depth > 1:
+            return
+        if self._wait_dialog is None:
+            self._wait_dialog = WaitPopupDialog(self)
+        self._wait_dialog.show()
+        self._wait_dialog.raise_()
+        self._wait_dialog.activateWindow()
+        if QGuiApplication.overrideCursor() is None:
+            QGuiApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+
+    def _close_wait_popup(self) -> None:
+        if self._wait_popup_depth > 0:
+            self._wait_popup_depth -= 1
+        if self._wait_popup_depth > 0:
+            return
+        if self._wait_dialog is not None:
+            self._wait_dialog.hide()
+        if QGuiApplication.overrideCursor() is not None:
+            QGuiApplication.restoreOverrideCursor()
+
+    def _run_with_wait_popup(self, operation) -> None:
+        self._show_wait_popup()
+        QApplication.processEvents()
+        try:
+            operation()
+            QApplication.processEvents()
+        finally:
+            self._close_wait_popup()
+
+    def _set_lead_visibility_with_wait(self, visibility: dict[int, bool]) -> None:
+        self._run_with_wait_popup(
+            lambda: self.plot_widget.set_lead_visibility(visibility)
+        )
+
+    def _reset_view_with_wait(self) -> None:
+        self._run_with_wait_popup(self.plot_widget.reset_view)
+
+    def _set_raw_visible_with_wait(self, visible: bool) -> None:
+        self._run_with_wait_popup(lambda: self.plot_widget.set_raw_visible(visible))
+
+    def _set_filtered_visible_with_wait(self, visible: bool) -> None:
+        self._run_with_wait_popup(
+            lambda: self.plot_widget.set_filtered_visible(visible)
+        )
+
+    def _set_preload_ui_state(self, preload: bool) -> None:
+        self._preload_ui_active = preload
+        has_record = self.current_record is not None
+        self.controls.setEnabled(not preload)
+        self.plot_widget.set_preload_state(preload)
+        self.menuBar().setEnabled(not preload)
+        self.open_file_action.setEnabled(not preload)
+        self.content_tabs.setTabEnabled(self.analysis_tab_index, not preload and has_record)
+        self.content_tabs.setTabEnabled(self.ml_tab_index, not preload and has_record)
+        self.content_tabs.tabBar().setEnabled(not preload)
+        self.info_button.setEnabled(not preload and has_record)
+        if preload and self.content_tabs.currentIndex() in (self.analysis_tab_index, self.ml_tab_index):
+            self.content_tabs.setCurrentIndex(self.ecg_tab_index)
+        self._update_fragment_action_state()
+        self._sync_sidebar_to_current_tab(self.content_tabs.currentIndex())
+
     def _update_info_button_state(self) -> None:
-        self.info_button.setEnabled(self.current_record is not None)
+        self.info_button.setEnabled(
+            self.current_record is not None and not self._preload_ui_active
+        )
 
     def _build_record_with_sampling_rate(
         self, record: ECGRecord, sampling_rate: float
@@ -448,9 +531,12 @@ class MainWindow(QMainWindow):
         )
 
     def _set_window_preset(self, seconds: int | None) -> None:
-        self.plot_widget.set_window_seconds(seconds)
-        self._render_current_window()
-        self._update_playback_position_display()
+        def update_window() -> None:
+            self.plot_widget.set_window_seconds(seconds)
+            self._render_current_window()
+            self._update_playback_position_display()
+
+        self._run_with_wait_popup(update_window)
 
     def _play(self) -> None:
         if not self._playback_available():
@@ -552,9 +638,6 @@ class MainWindow(QMainWindow):
         self._refresh_frequency_analysis_for_visible_range()
 
     def _update_playback_position_display(self) -> None:
-        self.controls.set_playback_position(
-            self.playback_state.current_time_sec, self._playback_duration_seconds()
-        )
         self.plot_widget.set_playback_position(
             self.playback_state.current_time_sec, self._playback_duration_seconds()
         )
@@ -588,19 +671,22 @@ class MainWindow(QMainWindow):
         self.playback_status_label.setText(f"Odtwarzanie: {status_text}")
         self.plot_widget.set_playback_state(status_text.capitalize())
 
-    def _update_frequency_analysis_action_state(self) -> None:
-        analysis_available = self.current_record is not None
+    def _update_analysis_tabs_state(self) -> None:
+        analysis_available = self.current_record is not None and not self._preload_ui_active
         self.content_tabs.setTabEnabled(self.analysis_tab_index, analysis_available)
+        self.content_tabs.setTabEnabled(self.ml_tab_index, analysis_available)
+
         if (
             not analysis_available
-            and self.content_tabs.currentIndex() == self.analysis_tab_index
+            and self.content_tabs.currentIndex() in (self.analysis_tab_index, self.ml_tab_index)
         ):
             self.content_tabs.setCurrentIndex(self.ecg_tab_index)
         self._sync_sidebar_to_current_tab(self.content_tabs.currentIndex())
 
     def _update_fragment_action_state(self) -> None:
         self.save_fragment_action.setEnabled(
-            self.current_record is not None
+            not self._preload_ui_active
+            and self.current_record is not None
             and self.plot_widget.selected_sample_range() is not None
         )
 
@@ -730,5 +816,5 @@ class MainWindow(QMainWindow):
             processed_signal=self.processed_signal,
             filtered_available=self.filter_config.any_enabled()
             and self.processed_signal is not None,
-            active_lead_index=max(self.controls.active_lead_combo.currentIndex(), 0),
+            active_lead_index=self.controls.primary_selected_lead_index(),
         )

@@ -1,0 +1,13 @@
+{
+  "input_dim": 135,
+  "n_classes": 3,
+  "classes": [
+    "ARR",
+    "CHF",
+    "NSR"
+  ],
+  "best_f1": 0.7163,
+  "fs": 360,
+  "window_len": 3600,
+  "step_len": 1800
+}
