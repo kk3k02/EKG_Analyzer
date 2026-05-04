@@ -33,6 +33,7 @@ from app.gui.dialogs import (
     WaitPopupDialog,
 )
 from app.gui.analysis_tab import FrequencyAnalysisDialog, FrequencyAnalysisInput
+from app.gui.ml_analysis_tab import MLAnalysisTab
 from app.gui.plot_widget import CursorInfo, ECGPlotWidget
 from app.io.store_factory import StoreFactory
 from app.models.ecg_record import ECGRecord
@@ -43,7 +44,6 @@ from app.services.preprocessing import (
 )
 from app.services.selection_stats import SelectionStats
 from app.services.validation import build_time_axis
-from disease_detector import DiseaseDetector
 
 
 PLAYBACK_TIMER_INTERVAL_MS = 50
@@ -69,11 +69,6 @@ class LoaderSignals(QObject):
     failed = Signal(str)
 
 
-class DiseaseDetectionSignals(QObject):
-    finished = Signal(dict)
-    failed = Signal(str)
-
-
 class LoadFileTask(QRunnable):
     """Background loader task used to keep the GUI responsive."""
 
@@ -87,25 +82,6 @@ class LoadFileTask(QRunnable):
             loader = StoreFactory.create_loader(self.file_path)
             record = loader.load(self.file_path)
             self.signals.finished.emit(LoadedRecord(record=record))
-        except Exception as exc:
-            self.signals.failed.emit(str(exc))
-
-
-class DiseaseDetectionTask(QRunnable):
-    def __init__(self, signal: np.ndarray, sampling_rate: float, models_dir: Path) -> None:
-        super().__init__()
-        self.signal = np.asarray(signal, dtype=np.float32)
-        self.sampling_rate = float(sampling_rate)
-        self.models_dir = models_dir
-        self.signals = DiseaseDetectionSignals()
-
-    def run(self) -> None:
-        try:
-            detector = DiseaseDetector(self.models_dir)
-            detector.load_models()
-            self.signals.finished.emit(
-                detector.predict(self.signal, fs=self.sampling_rate)
-            )
         except Exception as exc:
             self.signals.failed.emit(str(exc))
 
@@ -194,8 +170,12 @@ class MainWindow(QMainWindow):
         self.analysis_placeholder.setStyleSheet("color: #666666;")
         self.analysis_tab_layout.addWidget(self.analysis_placeholder)
 
+        self.ml_tab = MLAnalysisTab(self)
+
         self.ecg_tab_index = self.content_tabs.addTab(self.ecg_tab, "EKG")
         self.analysis_tab_index = self.content_tabs.addTab(self.analysis_tab, "Analiza")
+        self.ml_tab_index = self.content_tabs.addTab(self.ml_tab, "Analiza ML")
+
         self.info_button = QPushButton("Informacje", self)
         self.info_button.setEnabled(False)
         self.info_button.clicked.connect(self._open_metadata_dialog)
@@ -225,7 +205,7 @@ class MainWindow(QMainWindow):
         self._connect_signals()
         self._apply_screen_adaptive_geometry()
         self.controls.sync_signal_display_mode(filters_active=False)
-        self._update_frequency_analysis_action_state()
+        self._update_analysis_tabs_state()
         self._sync_sidebar_to_current_tab(self.content_tabs.currentIndex())
         self._set_preload_ui_state(True)
 
@@ -272,7 +252,6 @@ class MainWindow(QMainWindow):
         self.controls.filtered_toggled.connect(self._set_filtered_visible_with_wait)
         self.controls.sampling_rate_changed.connect(self._override_sampling_rate)
         self.controls.filter_config_changed.connect(self._apply_filter_config)
-        self.controls.disease_detection_requested.connect(self._detect_diseases)
 
         self.plot_widget.cursor_changed.connect(self._update_cursor_status)
         self.plot_widget.selection_changed.connect(self._update_selection_status)
@@ -341,6 +320,7 @@ class MainWindow(QMainWindow):
         self.metadata_dialog.set_record(record)
         self._update_file_info(record)
         self.controls.set_leads(record.lead_names)
+        self.ml_tab.update_record(record)
         sampling_rate_enabled, sampling_rate_tooltip = (
             self._sampling_rate_control_state(record)
         )
@@ -361,6 +341,7 @@ class MainWindow(QMainWindow):
     def _handle_load_error(self, message: str) -> None:
         self._set_preload_ui_state(True)
         self._close_wait_popup()
+        self.ml_tab.update_record(None)
         QMessageBox.critical(self, "Blad odczytu", message)
         self.status_bar.showMessage("Nie udalo sie wczytac pliku.", 5000)
 
@@ -382,6 +363,7 @@ class MainWindow(QMainWindow):
                 tooltip=self._sampling_rate_control_state(self.current_record)[1],
             )
             self._refresh_processed_signal()
+            self.ml_tab.update_record(self.current_record)
 
         self._run_with_wait_popup(update_sampling_rate)
         self.status_bar.showMessage(
@@ -401,13 +383,13 @@ class MainWindow(QMainWindow):
             self.processed_signal = None
             self._update_file_info(None)
             self._update_info_button_state()
-            self.controls.set_disease_detection_enabled(False)
             self.plot_widget.set_playback_enabled(False)
             self.plot_widget.set_playback_position(0.0, 0.0)
             self._set_playback_status("zatrzymane")
             self.plot_widget.set_record(None, None, filtering_active=False)
             self._update_fragment_action_state()
-            self._update_frequency_analysis_action_state()
+            self._update_analysis_tabs_state()
+            self.ml_tab.update_record(None)
             return
         with warnings.catch_warnings(record=True) as captured_warnings:
             warnings.simplefilter("always", RuntimeWarning)
@@ -421,7 +403,6 @@ class MainWindow(QMainWindow):
             self.processed_signal,
             filtering_active=self.filter_config.any_enabled(),
         )
-        self.controls.set_disease_detection_enabled(self.current_record is not None)
         self.plot_widget.set_playback_enabled(self._playback_available())
         self.controls.sync_signal_display_mode(
             filters_active=self.filter_config.any_enabled()
@@ -430,54 +411,15 @@ class MainWindow(QMainWindow):
         self._render_current_window()
         self._update_playback_position_display()
         self._update_fragment_action_state()
-        self._update_frequency_analysis_action_state()
+        self._update_analysis_tabs_state()
+        self.ml_tab.update_record(self.current_record)
+
         if captured_warnings:
             self.status_bar.showMessage(str(captured_warnings[-1].message), 7000)
 
     def _open_metadata_dialog(self) -> None:
         self.metadata_dialog.set_record(self.current_record)
         self.metadata_dialog.exec()
-
-    def _detect_diseases(self) -> None:
-        if self.current_record is None:
-            QMessageBox.information(self, "Brak danych", "Najpierw wczytaj plik EKG.")
-            return
-
-        models_dir = Path(__file__).resolve().parents[2] / "models"
-        available_models = (
-            models_dir / "rf_model.pkl",
-            models_dir / "svm_model.pkl",
-            models_dir / "cnn_model.pth",
-        )
-        if not models_dir.exists() or not any(path.exists() for path in available_models):
-            QMessageBox.information(
-                self,
-                "Brak modeli",
-                "Brak wytrenowanych modeli. Uruchom skrypt save_models.py po treningu w notatniku Jupyter.",
-            )
-            return
-
-        task = DiseaseDetectionTask(
-            signal=self._active_signal_for_disease_detection(),
-            sampling_rate=self.current_record.sampling_rate,
-            models_dir=models_dir,
-        )
-        task.signals.finished.connect(self._handle_disease_detection_finished)
-        task.signals.failed.connect(self._handle_disease_detection_failed)
-        self._show_disease_progress()
-        self.thread_pool.start(task)
-
-    def _active_signal_for_disease_detection(self) -> np.ndarray:
-        if self.current_record is None:
-            raise RuntimeError("No ECG record loaded.")
-        lead_index = self.controls.primary_selected_lead_index()
-        return np.asarray(self.current_record.signal[:, lead_index], dtype=np.float32)
-
-    def _show_disease_progress(self) -> None:
-        self._show_wait_popup()
-
-    def _close_disease_progress(self) -> None:
-        self._close_wait_popup()
 
     def _show_wait_popup(self) -> None:
         self._wait_popup_depth += 1
@@ -534,22 +476,13 @@ class MainWindow(QMainWindow):
         self.menuBar().setEnabled(not preload)
         self.open_file_action.setEnabled(not preload)
         self.content_tabs.setTabEnabled(self.analysis_tab_index, not preload and has_record)
+        self.content_tabs.setTabEnabled(self.ml_tab_index, not preload and has_record)
         self.content_tabs.tabBar().setEnabled(not preload)
         self.info_button.setEnabled(not preload and has_record)
-        if preload and self.content_tabs.currentIndex() == self.analysis_tab_index:
+        if preload and self.content_tabs.currentIndex() in (self.analysis_tab_index, self.ml_tab_index):
             self.content_tabs.setCurrentIndex(self.ecg_tab_index)
         self._update_fragment_action_state()
         self._sync_sidebar_to_current_tab(self.content_tabs.currentIndex())
-
-    def _handle_disease_detection_finished(self, result: dict) -> None:
-        self._close_disease_progress()
-        self.status_bar.showMessage("Zakonczono analize schorzen EKG.", 5000)
-        DiseaseResultDialog(result, self).exec()
-
-    def _handle_disease_detection_failed(self, message: str) -> None:
-        self._close_disease_progress()
-        QMessageBox.critical(self, "Blad analizy", message)
-        self.status_bar.showMessage("Analiza schorzen nie powiodla sie.", 5000)
 
     def _update_info_button_state(self) -> None:
         self.info_button.setEnabled(
@@ -738,12 +671,14 @@ class MainWindow(QMainWindow):
         self.playback_status_label.setText(f"Odtwarzanie: {status_text}")
         self.plot_widget.set_playback_state(status_text.capitalize())
 
-    def _update_frequency_analysis_action_state(self) -> None:
+    def _update_analysis_tabs_state(self) -> None:
         analysis_available = self.current_record is not None and not self._preload_ui_active
         self.content_tabs.setTabEnabled(self.analysis_tab_index, analysis_available)
+        self.content_tabs.setTabEnabled(self.ml_tab_index, analysis_available)
+
         if (
             not analysis_available
-            and self.content_tabs.currentIndex() == self.analysis_tab_index
+            and self.content_tabs.currentIndex() in (self.analysis_tab_index, self.ml_tab_index)
         ):
             self.content_tabs.setCurrentIndex(self.ecg_tab_index)
         self._sync_sidebar_to_current_tab(self.content_tabs.currentIndex())

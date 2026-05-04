@@ -30,7 +30,6 @@ class ControlsPanel(QWidget):
     filtered_toggled = Signal(bool)
     sampling_rate_changed = Signal(float)
     filter_config_changed = Signal(object)
-    disease_detection_requested = Signal()
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -61,14 +60,6 @@ class ControlsPanel(QWidget):
             )
             preset_layout.addWidget(button)
         layout.addWidget(preset_group)
-        layout.addWidget(self._build_section_separator())
-
-        self.disease_detection_button = QPushButton("Wykryj schorzenia", self)
-        self.disease_detection_button.setEnabled(False)
-        self.disease_detection_button.clicked.connect(
-            self.disease_detection_requested.emit
-        )
-        layout.addWidget(self.disease_detection_button)
         layout.addWidget(self._build_section_separator())
 
         leads_group = QGroupBox("Odprowadzenia")
