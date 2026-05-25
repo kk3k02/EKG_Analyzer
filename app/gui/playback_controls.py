@@ -21,57 +21,62 @@ from app.gui.time_utils import format_playback_clock
 
 
 class PlaybackControlsWidget(QWidget):
+    _PLAYING = "Odtwarzanie"
+
     play_requested = Signal()
     pause_requested = Signal()
     stop_requested = Signal()
     step_backward_requested = Signal()
     step_forward_requested = Signal()
+    next_annotation_requested = Signal()
     playback_speed_changed = Signal(float)
     playback_loop_toggled = Signal(bool)
     playback_position_changed = Signal(float)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
+        self._is_playing = False
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
 
-        self.play_button = QPushButton(self)
-        self.pause_button = QPushButton(self)
+        self.play_pause_button = QPushButton(self)
         self.step_backward_button = QPushButton(self)
         self.stop_button = QPushButton(self)
         self.step_forward_button = QPushButton(self)
-        self.play_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
-        self.pause_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPause))
+        self.next_annotation_button = QPushButton(self)
+        self.play_pause_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
         self.step_backward_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaSeekBackward))
         self.stop_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaStop))
         self.step_forward_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaSeekForward))
-        self.play_button.setToolTip("Start")
-        self.pause_button.setToolTip("Pauza")
+        self.next_annotation_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaSkipForward))
+        self.play_pause_button.setToolTip("Start")
         self.step_backward_button.setToolTip("Wstecz")
         self.stop_button.setToolTip("Stop")
         self.step_forward_button.setToolTip("Do przodu")
-        self.play_button.clicked.connect(self.play_requested.emit)
-        self.pause_button.clicked.connect(self.pause_requested.emit)
+        self.next_annotation_button.setToolTip("Następna nieregularna adnotacja")
+        self.play_pause_button.clicked.connect(self._on_play_pause_clicked)
         self.step_backward_button.clicked.connect(self.step_backward_requested.emit)
         self.stop_button.clicked.connect(self.stop_requested.emit)
         self.step_forward_button.clicked.connect(self.step_forward_requested.emit)
+        self.next_annotation_button.clicked.connect(self.next_annotation_requested.emit)
         for button in (
-            self.play_button,
-            self.pause_button,
+            self.play_pause_button,
             self.step_backward_button,
             self.stop_button,
             self.step_forward_button,
+            self.next_annotation_button,
         ):
             button.setFixedWidth(36)
-        layout.addWidget(self.play_button)
-        layout.addWidget(self.pause_button)
+        layout.addWidget(self.play_pause_button)
         layout.addSpacing(12)
         layout.addWidget(self.step_backward_button)
         layout.addWidget(self.stop_button)
         layout.addWidget(self.step_forward_button)
+        layout.addSpacing(6)
+        layout.addWidget(self.next_annotation_button)
 
         self.navigation_slider = QSlider(Qt.Orientation.Horizontal, self)
         self.navigation_slider.setRange(0, 1000)
@@ -136,13 +141,19 @@ class PlaybackControlsWidget(QWidget):
 
         self.set_playback_enabled(False)
 
+    def _on_play_pause_clicked(self) -> None:
+        if self._is_playing:
+            self.pause_requested.emit()
+        else:
+            self.play_requested.emit()
+
     def set_playback_enabled(self, enabled: bool) -> None:
         for widget in (
-            self.play_button,
-            self.pause_button,
+            self.play_pause_button,
             self.step_backward_button,
             self.stop_button,
             self.step_forward_button,
+            self.next_annotation_button,
             self.navigation_slider,
             self.playback_settings_button,
         ):
@@ -169,9 +180,13 @@ class PlaybackControlsWidget(QWidget):
         self.navigation_slider.blockSignals(False)
 
     def set_playback_state(self, state: str) -> None:
-        self.play_button.setProperty("playbackState", state)
-        self.play_button.style().unpolish(self.play_button)
-        self.play_button.style().polish(self.play_button)
+        self._is_playing = (state == self._PLAYING)
+        if self._is_playing:
+            self.play_pause_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPause))
+            self.play_pause_button.setToolTip("Pauza")
+        else:
+            self.play_pause_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
+            self.play_pause_button.setToolTip("Start")
 
     def _emit_playback_position_change(self, slider_value: int) -> None:
         maximum = max(self.navigation_slider.maximum(), 1)
