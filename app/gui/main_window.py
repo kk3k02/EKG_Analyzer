@@ -263,6 +263,7 @@ class MainWindow(QMainWindow):
         self.plot_widget.step_backward_requested.connect(self._step_backward)
         self.plot_widget.stop_requested.connect(self._stop)
         self.plot_widget.step_forward_requested.connect(self._step_forward)
+        self.plot_widget.next_annotation_requested.connect(self._jump_to_next_annotation)
         self.plot_widget.playback_speed_changed.connect(self._set_playback_speed)
         self.plot_widget.playback_loop_toggled.connect(self._set_playback_loop)
         self.plot_widget.playback_position_changed.connect(self._seek_playback_fraction)
@@ -572,6 +573,24 @@ class MainWindow(QMainWindow):
 
     def _step_forward(self) -> None:
         self._step_playback(self._effective_playback_window_seconds())
+
+    def _jump_to_next_annotation(self) -> None:
+        if not self._playback_available() or self.current_record is None:
+            return
+        window_sec = self._effective_playback_window_seconds()
+        current_page = int(self.playback_state.current_time_sec / window_sec)
+        non_normal = [
+            ann for ann in self.current_record.annotations
+            if ann.get("symbol", "N") != "N"
+            and int(ann["time"] / window_sec) > current_page
+        ]
+        if not non_normal:
+            return
+        next_ann = min(non_normal, key=lambda a: a["time"])
+        new_time = int(next_ann["time"] / window_sec) * window_sec
+        self.playback_state.current_time_sec = min(new_time, self._max_playback_start_time())
+        self._render_current_window()
+        self._update_playback_position_display()
 
     def _reset_playback(self) -> None:
         self.playback_timer.stop()

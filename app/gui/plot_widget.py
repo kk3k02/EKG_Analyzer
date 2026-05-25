@@ -65,6 +65,7 @@ class ECGPlotWidget(QWidget):
     stop_requested = Signal()
     step_backward_requested = Signal()
     step_forward_requested = Signal()
+    next_annotation_requested = Signal()
     playback_speed_changed = Signal(float)
     playback_loop_toggled = Signal(bool)
     playback_position_changed = Signal(float)
@@ -140,6 +141,9 @@ class ECGPlotWidget(QWidget):
         )
         self.playback_controls.step_forward_requested.connect(
             self.step_forward_requested.emit
+        )
+        self.playback_controls.next_annotation_requested.connect(
+            self.next_annotation_requested.emit
         )
         self.playback_controls.playback_speed_changed.connect(
             self.playback_speed_changed.emit
