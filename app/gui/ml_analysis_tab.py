@@ -56,6 +56,8 @@ class MLAnalysisTask(QRunnable):
 class MLAnalysisTab(QWidget):
     """Widget for the Machine Learning analysis tab."""
 
+    predictions_updated = Signal(object)
+
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._record: ECGRecord | None = None
@@ -84,11 +86,14 @@ class MLAnalysisTab(QWidget):
 
         self.lead_combo = QComboBox(self)
         self.run_button = QPushButton("Uruchom analizę", self)
+        self.clear_overlay_button = QPushButton("Usuń nakładki z wykresu", self)
+        self.clear_overlay_button.setEnabled(False)
         self.status_label = QLabel("Gotowy.", self)
         self.status_label.setWordWrap(True)
 
         form_layout.addRow("Odprowadzenie:", self.lead_combo)
         form_layout.addRow(self.run_button)
+        form_layout.addRow(self.clear_overlay_button)
         form_layout.addRow("Status:", self.status_label)
 
         controls_layout.addWidget(controls_group)
@@ -124,6 +129,7 @@ class MLAnalysisTab(QWidget):
 
         # Connect signals
         self.run_button.clicked.connect(self.run_analysis)
+        self.clear_overlay_button.clicked.connect(self._clear_overlay)
 
         controls_layout.addWidget(controls_group)
 
@@ -192,12 +198,18 @@ class MLAnalysisTab(QWidget):
 
         self._main_window.thread_pool.start(task)
 
+    def _clear_overlay(self) -> None:
+        self.predictions_updated.emit(None)
+        self.clear_overlay_button.setEnabled(False)
+
     def _clear_results(self) -> None:
         self.majority_class_label.setText("-")
         self.majority_prob_label.setText("-")
         self.distribution_label.setText("-")
         self.n_windows_label.setText("-")
         self.details_table.setRowCount(0)
+        self.clear_overlay_button.setEnabled(False)
+        self.predictions_updated.emit(None)
 
     def _handle_results(self, results: dict) -> None:
         self.status_label.setText("Analiza zakończona.")
@@ -226,6 +238,8 @@ class MLAnalysisTab(QWidget):
             self.details_table.setItem(i, 3, QTableWidgetItem(probs_str))
 
         self.details_table.resizeRowsToContents()
+        self.clear_overlay_button.setEnabled(True)
+        self.predictions_updated.emit(window_results)
 
     def _handle_error(self, message: str) -> None:
         self.status_label.setText(f"Błąd: {message}")

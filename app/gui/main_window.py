@@ -270,6 +270,7 @@ class MainWindow(QMainWindow):
         self.plot_widget.visible_time_range_changed.connect(
             self._refresh_frequency_analysis_for_visible_range
         )
+        self.ml_tab.predictions_updated.connect(self.plot_widget.set_ml_predictions)
 
     @staticmethod
     def _sampling_rate_control_state(record: ECGRecord) -> tuple[bool, str]:
@@ -318,6 +319,7 @@ class MainWindow(QMainWindow):
 
         self.current_record = record
         self._reset_playback()
+        self.plot_widget.set_ml_predictions(None)
         self.metadata_dialog.set_record(record)
         self._update_file_info(record)
         self.controls.set_leads(record.lead_names)
