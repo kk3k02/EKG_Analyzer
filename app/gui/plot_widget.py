@@ -56,6 +56,17 @@ class ECGPlotWidget(QWidget):
     diagnostic measurements yet..
     """
 
+    _ML_CLASS_COLORS: dict[str, tuple] = {
+        "ARR": (220, 50, 50, 35),
+        "CHF": (255, 140, 0, 35),
+        "NSR": (50, 180, 50, 25),
+    }
+    _ML_CLASS_PEN_COLORS: dict[str, str] = {
+        "ARR": "#DC3232",
+        "CHF": "#CC6600",
+        "NSR": "#228B22",
+    }
+
     load_requested = Signal()
     cursor_changed = Signal(object)
     selection_changed = Signal(object)
@@ -206,6 +217,8 @@ class ECGPlotWidget(QWidget):
         self._window_seconds: int = 5
         self._monitor_curves: list[pg.PlotDataItem] = []
         self._annotation_items: list[pg.TextItem] = []
+        self._ml_window_results: list[dict] = []
+        self._ml_prediction_items: list = []
         self._overview_plot_item: pg.PlotDataItem | None = None
         self._frequency_markers: list[pg.InfiniteLine] = []
         self._overview_mode = "frequency"
@@ -456,6 +469,43 @@ class ECGPlotWidget(QWidget):
                     item.show()
 
         self._schedule_frequency_overview_update(immediate=True)
+        self._ml_prediction_items.clear()
+        self._render_ml_overlays()
+
+    def set_ml_predictions(self, window_results: list[dict] | None) -> None:
+        self._ml_window_results = window_results if window_results else []
+        self._render()
+
+    def _render_ml_overlays(self) -> None:
+        if not self._ml_window_results or self._record is None:
+            return
+        _, (y_min, y_max) = self.main_plot.viewRange()
+        label_y = y_max
+        for win in self._ml_window_results:
+            start_s: float = win.get("start_s", 0.0)
+            end_s: float = win.get("end_s", 0.0)
+            cls: str = win.get("class", "NSR")
+            probs: dict = win.get("probs", {})
+            prob = probs.get(cls, 0.0)
+            brush_rgba = self._ML_CLASS_COLORS.get(cls, (128, 128, 128, 30))
+            pen_color = self._ML_CLASS_PEN_COLORS.get(cls, "#444444")
+            region = pg.LinearRegionItem(
+                values=(start_s, end_s),
+                movable=False,
+                brush=pg.mkBrush(*brush_rgba),
+                pen=pg.mkPen(None),
+            )
+            region.setZValue(-10)
+            self.main_plot.addItem(region)
+            self._ml_prediction_items.append(region)
+            label = pg.TextItem(
+                text=f"{cls} {prob:.0%}",
+                color=pen_color,
+                anchor=(0.5, 1.0),
+            )
+            label.setPos((start_s + end_s) / 2.0, label_y)
+            self.main_plot.addItem(label)
+            self._ml_prediction_items.append(label)
 
     def update_frequency_overview_plot(self) -> None:
         if self._record is None:
