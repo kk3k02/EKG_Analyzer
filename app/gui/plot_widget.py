@@ -216,7 +216,7 @@ class ECGPlotWidget(QWidget):
         self._view_mode = "stacked"
         self._active_lead = 0
         self._lead_visibility: dict[int, bool] = {}
-        self._window_seconds: int = 5
+        self._window_seconds: int = 10
         self._monitor_curves: list[pg.PlotDataItem] = []
         self._annotation_items: list[pg.TextItem] = []
         self._ml_window_results: list[dict] = []
@@ -349,7 +349,7 @@ class ECGPlotWidget(QWidget):
         if self._record is None:
             return
 
-        win_new = window_seconds if window_seconds > 0 else 5.0
+        win_new = window_seconds if window_seconds > 0 else 10.0
         overlap = 1.0 if self._overlap_enabled else 0.0
         record_start = float(self._record.time_axis[0])
         playback_time = max(float(start_time), 0.0)
