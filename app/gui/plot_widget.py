@@ -86,6 +86,7 @@ class ECGPlotWidget(QWidget):
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
+        self._overlap_enabled: bool = True
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 20, 0, 0)
         layout.setSpacing(10)
@@ -165,6 +166,7 @@ class ECGPlotWidget(QWidget):
         self.playback_controls.playback_position_changed.connect(
             self.playback_position_changed.emit
         )
+        self.playback_controls.overlap_toggled.connect(self.set_overlap_enabled)
 
         overview_container = QWidget(self)
         overview_layout = QVBoxLayout(overview_container)
@@ -328,12 +330,15 @@ class ECGPlotWidget(QWidget):
         self._window_seconds = seconds
         self._render()
 
+    def set_overlap_enabled(self, enabled: bool) -> None:
+        self._overlap_enabled = enabled
+
     def set_visible_time_window(self, start_time: float, window_seconds: float) -> None:
         if self._record is None:
             return
 
         win_new = window_seconds if window_seconds > 0 else 5.0
-        overlap = 1.0
+        overlap = 1.0 if self._overlap_enabled else 0.0
         record_start = float(self._record.time_axis[0])
         playback_time = max(float(start_time), 0.0)
         absolute_cursor_time = record_start + playback_time

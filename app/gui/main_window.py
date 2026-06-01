@@ -571,10 +571,10 @@ class MainWindow(QMainWindow):
         self._update_playback_position_display()
 
     def _step_backward(self) -> None:
-        self._step_playback(-self._effective_playback_window_seconds())
+        self._step_playback(-self.plot_widget.playback_controls.step_size_seconds)
 
     def _step_forward(self) -> None:
-        self._step_playback(self._effective_playback_window_seconds())
+        self._step_playback(self.plot_widget.playback_controls.step_size_seconds)
 
     def _jump_to_next_annotation(self) -> None:
         if not self._playback_available() or self.current_record is None:
