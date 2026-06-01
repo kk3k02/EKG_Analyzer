@@ -333,6 +333,18 @@ class ECGPlotWidget(QWidget):
     def set_overlap_enabled(self, enabled: bool) -> None:
         self._overlap_enabled = enabled
 
+    def set_fixed_range(self, start_sec: float, end_sec: float) -> None:
+        if self._record is None:
+            return
+        record_start = float(self._record.time_axis[0])
+        abs_start = record_start + start_sec
+        abs_end = record_start + end_sec
+        self._current_playback_time = abs_start
+        self._cursor_pos = abs_start
+        self.cursor_line.setPos(abs_start)
+        self.main_plot.setXRange(abs_start, abs_end, padding=0.0)
+        self._update_revealed_data(abs_start, abs_end)
+
     def set_visible_time_window(self, start_time: float, window_seconds: float) -> None:
         if self._record is None:
             return

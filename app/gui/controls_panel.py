@@ -24,6 +24,7 @@ from app.services.preprocessing import SignalFilterConfig, default_filter_config
 class ControlsPanel(QWidget):
     lead_visibility_changed = Signal(object)
     window_preset_selected = Signal(object)
+    fixed_range_requested = Signal(float, float)
     reset_view_requested = Signal()
     grid_toggled = Signal(bool)
     raw_toggled = Signal(bool)
@@ -62,6 +63,31 @@ class ControlsPanel(QWidget):
             self._preset_buttons[value] = button
             preset_layout.addWidget(button)
         layout.addWidget(preset_group)
+        layout.addWidget(self._build_section_separator())
+
+        fixed_range_group = QGroupBox("Stały przedział")
+        fixed_range_layout = QVBoxLayout(fixed_range_group)
+        spinbox_row = QHBoxLayout()
+        self.range_from_spin = QDoubleSpinBox(self)
+        self.range_from_spin.setRange(0.0, 99999.0)
+        self.range_from_spin.setDecimals(1)
+        self.range_from_spin.setSuffix(" s")
+        self.range_from_spin.setValue(0.0)
+        self.range_to_spin = QDoubleSpinBox(self)
+        self.range_to_spin.setRange(0.0, 99999.0)
+        self.range_to_spin.setDecimals(1)
+        self.range_to_spin.setSuffix(" s")
+        self.range_to_spin.setValue(10.0)
+        spinbox_row.addWidget(QLabel("Od"))
+        spinbox_row.addWidget(self.range_from_spin)
+        spinbox_row.addSpacing(8)
+        spinbox_row.addWidget(QLabel("Do"))
+        spinbox_row.addWidget(self.range_to_spin)
+        fixed_range_layout.addLayout(spinbox_row)
+        self.apply_range_button = QPushButton("Zastosuj")
+        self.apply_range_button.clicked.connect(self._emit_fixed_range)
+        fixed_range_layout.addWidget(self.apply_range_button)
+        layout.addWidget(fixed_range_group)
         layout.addWidget(self._build_section_separator())
 
         leads_group = QGroupBox("Odprowadzenia")
@@ -188,6 +214,12 @@ class ControlsPanel(QWidget):
     def _on_preset_clicked(self, value: int) -> None:
         self.set_active_window_preset(value)
         self.window_preset_selected.emit(value)
+
+    def _emit_fixed_range(self) -> None:
+        start = self.range_from_spin.value()
+        end = self.range_to_spin.value()
+        if end > start:
+            self.fixed_range_requested.emit(start, end)
 
     def _build_section_separator(self) -> QFrame:
         separator = QFrame(self)

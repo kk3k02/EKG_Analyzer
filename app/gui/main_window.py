@@ -246,6 +246,7 @@ class MainWindow(QMainWindow):
         self.plot_widget.load_requested.connect(self._choose_file)
         self.controls.lead_visibility_changed.connect(self._set_lead_visibility_with_wait)
         self.controls.window_preset_selected.connect(self._set_window_preset)
+        self.controls.fixed_range_requested.connect(self._set_fixed_range)
         self.controls.reset_view_requested.connect(self._reset_view_with_wait)
         self.controls.grid_toggled.connect(self.plot_widget.set_grid_visible)
         self.controls.raw_toggled.connect(self._set_raw_visible_with_wait)
@@ -540,6 +541,13 @@ class MainWindow(QMainWindow):
             self._update_playback_position_display()
 
         self._run_with_wait_popup(update_window)
+
+    def _set_fixed_range(self, start_sec: float, end_sec: float) -> None:
+        if not self._playback_available():
+            return
+        self.plot_widget.set_fixed_range(start_sec, end_sec)
+        self.playback_state.current_time_sec = end_sec
+        self._update_playback_position_display()
 
     def _play(self) -> None:
         if not self._playback_available():
