@@ -32,6 +32,7 @@ class PlaybackControlsWidget(QWidget):
     playback_speed_changed = Signal(float)
     playback_loop_toggled = Signal(bool)
     playback_position_changed = Signal(float)
+    overlap_toggled = Signal(bool)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -133,6 +134,35 @@ class PlaybackControlsWidget(QWidget):
         loop_row.addWidget(self.loop_checkbox, alignment=Qt.AlignmentFlag.AlignRight)
         settings_layout.addLayout(loop_row)
 
+        self.step_size_combo = QComboBox(self)
+        for label, value in (("1 s", 1), ("5 s", 5), ("10 s", 10), ("30 s", 30)):
+            self.step_size_combo.addItem(label, userData=value)
+        self.step_size_combo.setCurrentIndex(self.step_size_combo.findData(5))
+
+        step_size_row = QHBoxLayout()
+        step_size_row.setContentsMargins(0, 0, 0, 0)
+        step_size_row.setSpacing(12)
+        step_size_label = QLabel("Krok przewijania", settings_container)
+        step_size_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        step_size_row.addWidget(step_size_label)
+        step_size_row.addStretch(1)
+        step_size_row.addWidget(self.step_size_combo, alignment=Qt.AlignmentFlag.AlignRight)
+        settings_layout.addLayout(step_size_row)
+
+        self.overlap_checkbox = QCheckBox("")
+        self.overlap_checkbox.setChecked(True)
+        self.overlap_checkbox.toggled.connect(self.overlap_toggled.emit)
+
+        overlap_row = QHBoxLayout()
+        overlap_row.setContentsMargins(0, 0, 0, 0)
+        overlap_row.setSpacing(12)
+        overlap_label = QLabel("Nakładanie okien (1 s)", settings_container)
+        overlap_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        overlap_row.addWidget(overlap_label)
+        overlap_row.addStretch(1)
+        overlap_row.addWidget(self.overlap_checkbox, alignment=Qt.AlignmentFlag.AlignRight)
+        settings_layout.addLayout(overlap_row)
+
         settings_action = QWidgetAction(self.playback_settings_menu)
         settings_action.setDefaultWidget(settings_container)
         self.playback_settings_menu.addAction(settings_action)
@@ -140,6 +170,11 @@ class PlaybackControlsWidget(QWidget):
         layout.addWidget(self.playback_settings_button)
 
         self.set_playback_enabled(False)
+
+    @property
+    def step_size_seconds(self) -> int:
+        value = self.step_size_combo.currentData()
+        return int(value) if value is not None else 5
 
     def _on_play_pause_clicked(self) -> None:
         if self._is_playing:
@@ -160,6 +195,8 @@ class PlaybackControlsWidget(QWidget):
             widget.setEnabled(enabled)
         self.playback_speed_combo.setEnabled(enabled)
         self.loop_checkbox.setEnabled(enabled)
+        self.step_size_combo.setEnabled(enabled)
+        self.overlap_checkbox.setEnabled(enabled)
         if not enabled:
             self.playback_position_label.setText("00:00 / 00:00")
             self.navigation_slider.blockSignals(True)

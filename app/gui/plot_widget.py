@@ -86,6 +86,7 @@ class ECGPlotWidget(QWidget):
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
+        self._overlap_enabled: bool = True
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 20, 0, 0)
         layout.setSpacing(10)
@@ -165,6 +166,7 @@ class ECGPlotWidget(QWidget):
         self.playback_controls.playback_position_changed.connect(
             self.playback_position_changed.emit
         )
+        self.playback_controls.overlap_toggled.connect(self.set_overlap_enabled)
 
         overview_container = QWidget(self)
         overview_layout = QVBoxLayout(overview_container)
@@ -214,7 +216,7 @@ class ECGPlotWidget(QWidget):
         self._view_mode = "stacked"
         self._active_lead = 0
         self._lead_visibility: dict[int, bool] = {}
-        self._window_seconds: int = 5
+        self._window_seconds: int = 10
         self._monitor_curves: list[pg.PlotDataItem] = []
         self._annotation_items: list[pg.TextItem] = []
         self._ml_window_results: list[dict] = []
@@ -328,12 +330,27 @@ class ECGPlotWidget(QWidget):
         self._window_seconds = seconds
         self._render()
 
+    def set_overlap_enabled(self, enabled: bool) -> None:
+        self._overlap_enabled = enabled
+
+    def set_fixed_range(self, start_sec: float, end_sec: float) -> None:
+        if self._record is None:
+            return
+        record_start = float(self._record.time_axis[0])
+        abs_start = record_start + start_sec
+        abs_end = record_start + end_sec
+        self._current_playback_time = abs_start
+        self._cursor_pos = abs_start
+        self.cursor_line.setPos(abs_start)
+        self.main_plot.setXRange(abs_start, abs_end, padding=0.0)
+        self._update_revealed_data(abs_start, abs_end)
+
     def set_visible_time_window(self, start_time: float, window_seconds: float) -> None:
         if self._record is None:
             return
 
-        win_new = window_seconds if window_seconds > 0 else 5.0
-        overlap = 1.0
+        win_new = window_seconds if window_seconds > 0 else 10.0
+        overlap = 1.0 if self._overlap_enabled else 0.0
         record_start = float(self._record.time_axis[0])
         playback_time = max(float(start_time), 0.0)
         absolute_cursor_time = record_start + playback_time
