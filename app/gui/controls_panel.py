@@ -53,11 +53,13 @@ class ControlsPanel(QWidget):
 
         preset_group = QGroupBox("Okno czasu")
         preset_layout = QHBoxLayout(preset_group)
+        self._preset_buttons: dict[int, QPushButton] = {}
         for label, value in (("2 s", 2), ("5 s", 5), ("10 s", 10), ("30 s", 30)):
             button = QPushButton(label)
             button.clicked.connect(
-                lambda checked=False, v=value: self.window_preset_selected.emit(v)
+                lambda checked=False, v=value: self._on_preset_clicked(v)
             )
+            self._preset_buttons[value] = button
             preset_layout.addWidget(button)
         layout.addWidget(preset_group)
         layout.addWidget(self._build_section_separator())
@@ -106,6 +108,7 @@ class ControlsPanel(QWidget):
         layout.addStretch(1)
         self._sync_filter_controls()
         self._toggle_filter_group_visibility(self.filter_section_checkbox.isChecked())
+        self.set_active_window_preset(10)
 
     def set_leads(self, lead_names: list[str]) -> None:
         self.leads_list.blockSignals(True)
@@ -174,6 +177,17 @@ class ControlsPanel(QWidget):
 
     def set_disease_detection_enabled(self, enabled: bool) -> None:
         self.disease_detection_button.setEnabled(enabled)
+
+    def set_active_window_preset(self, value: int | None) -> None:
+        for v, btn in self._preset_buttons.items():
+            if v == value:
+                btn.setStyleSheet("QPushButton { background-color: #6daef7; }")
+            else:
+                btn.setStyleSheet("")
+
+    def _on_preset_clicked(self, value: int) -> None:
+        self.set_active_window_preset(value)
+        self.window_preset_selected.emit(value)
 
     def _build_section_separator(self) -> QFrame:
         separator = QFrame(self)
