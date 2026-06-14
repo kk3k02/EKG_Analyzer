@@ -3,6 +3,7 @@ from pathlib import Path
 
 import numpy as np
 from PySide6.QtCore import QObject, QRunnable, Signal, Qt
+from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -58,10 +59,14 @@ class MLAnalysisTab(QWidget):
 
     predictions_updated = Signal(object)
 
+    _HIGHLIGHT_BRUSH = QBrush(QColor(80, 140, 255, 70))
+
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._record: ECGRecord | None = None
         self._main_window = parent
+        self._highlighted_row: int | None = None
+        self._row_start_s: list[float] = []
 
         main_layout = QHBoxLayout(self)
         main_layout.setContentsMargins(8, 8, 8, 8)
@@ -208,6 +213,8 @@ class MLAnalysisTab(QWidget):
         self.distribution_label.setText("-")
         self.n_windows_label.setText("-")
         self.details_table.setRowCount(0)
+        self._row_start_s = []
+        self._highlighted_row = None
         self.clear_overlay_button.setEnabled(False)
         self.predictions_updated.emit(None)
 
@@ -229,6 +236,8 @@ class MLAnalysisTab(QWidget):
 
         window_results = results.get("window_results", [])
         self.details_table.setRowCount(len(window_results))
+        self._row_start_s = [float(r["start_s"]) for r in window_results]
+        self._highlighted_row = None
         for i, row in enumerate(window_results):
             self.details_table.setItem(i, 0, QTableWidgetItem(f"{row['start_s']:.2f}"))
             self.details_table.setItem(i, 1, QTableWidgetItem(f"{row['end_s']:.2f}"))
@@ -240,6 +249,44 @@ class MLAnalysisTab(QWidget):
         self.details_table.resizeRowsToContents()
         self.clear_overlay_button.setEnabled(True)
         self.predictions_updated.emit(window_results)
+
+    def highlight_current_window(
+        self, current_time_sec: float, window_seconds: float
+    ) -> None:
+        """Highlight the table row matching the current display page.
+
+        Mapping is page-based on the display window size, so it stays in sync
+        with what the plot shows. Updates only the table (no chart redraw).
+        """
+        row_count = self.details_table.rowCount()
+        if row_count == 0 or not self._row_start_s:
+            self._set_highlighted_row(None)
+            return
+        win = window_seconds if window_seconds > 0 else 10.0
+        page_start = int(max(current_time_sec, 0.0) / win) * win  # first window -> 0.0
+        best_row = min(
+            range(row_count),
+            key=lambda r: abs(self._row_start_s[r] - page_start),
+        )
+        self._set_highlighted_row(best_row)
+
+    def _set_highlighted_row(self, row: int | None) -> None:
+        if row == self._highlighted_row:  # no change -> no refresh (anti-flicker)
+            return
+        if self._highlighted_row is not None:
+            self._apply_row_background(self._highlighted_row, None)
+        self._highlighted_row = row
+        if row is not None:
+            self._apply_row_background(row, self._HIGHLIGHT_BRUSH)
+            item = self.details_table.item(row, 0)
+            if item is not None:
+                self.details_table.scrollToItem(item)
+
+    def _apply_row_background(self, row: int, brush: QBrush | None) -> None:
+        for col in range(self.details_table.columnCount()):
+            item = self.details_table.item(row, col)
+            if item is not None:
+                item.setBackground(brush if brush is not None else QBrush())
 
     def _handle_error(self, message: str) -> None:
         self.status_label.setText(f"Błąd: {message}")

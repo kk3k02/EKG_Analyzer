@@ -271,7 +271,7 @@ class MainWindow(QMainWindow):
         self.plot_widget.visible_time_range_changed.connect(
             self._refresh_frequency_analysis_for_visible_range
         )
-        self.ml_tab.predictions_updated.connect(self.plot_widget.set_ml_predictions)
+        self.ml_tab.predictions_updated.connect(self._on_ml_predictions_updated)
 
     @staticmethod
     def _sampling_rate_control_state(record: ECGRecord) -> tuple[bool, str]:
@@ -657,10 +657,22 @@ class MainWindow(QMainWindow):
         self._render_current_window()
         self._update_playback_position_display()
 
+    def _on_ml_predictions_updated(self, window_results) -> None:
+        self.plot_widget.set_ml_predictions(window_results)
+        if self.current_record is not None:
+            self.ml_tab.highlight_current_window(
+                self.playback_state.current_time_sec,
+                self._effective_playback_window_seconds(),
+            )
+
     def _render_current_window(self) -> None:
         if self.current_record is None:
             return
         self.plot_widget.set_visible_time_window(
+            self.playback_state.current_time_sec,
+            self._effective_playback_window_seconds(),
+        )
+        self.ml_tab.highlight_current_window(
             self.playback_state.current_time_sec,
             self._effective_playback_window_seconds(),
         )
