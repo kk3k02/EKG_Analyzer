@@ -24,6 +24,7 @@ from app.services.frequency_overview import (
     FrequencyOverviewResult,
     compute_frequency_overview,
 )
+from app.services.playback_window import compute_scroll_window
 from app.services.selection_stats import compute_selection_stats
 
 
@@ -86,6 +87,7 @@ class ECGPlotWidget(QWidget):
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
+        self._continuous_scroll: bool = False
         self._overlap_enabled: bool = True
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 20, 0, 0)
@@ -165,6 +167,9 @@ class ECGPlotWidget(QWidget):
         )
         self.playback_controls.playback_position_changed.connect(
             self.playback_position_changed.emit
+        )
+        self.playback_controls.continuous_scroll_toggled.connect(
+            self.set_continuous_scroll
         )
         self.playback_controls.overlap_toggled.connect(self.set_overlap_enabled)
 
@@ -330,9 +335,6 @@ class ECGPlotWidget(QWidget):
         self._window_seconds = seconds
         self._render()
 
-    def set_overlap_enabled(self, enabled: bool) -> None:
-        self._overlap_enabled = enabled
-
     def set_fixed_range(self, start_sec: float, end_sec: float) -> None:
         if self._record is None:
             return
@@ -345,13 +347,57 @@ class ECGPlotWidget(QWidget):
         self.main_plot.setXRange(abs_start, abs_end, padding=0.0)
         self._update_revealed_data(abs_start, abs_end)
 
+    def set_continuous_scroll(self, enabled: bool) -> None:
+        """Przełącz sposób przeglądania sygnału podczas odtwarzania.
+
+        ``True``  → płynne przewijanie (strip-chart): widok przesuwa się ciągle,
+        bez skoków QRS, kursor ukryty.
+        ``False`` → tryb stronicowania (sweep): widok stały w obrębie strony,
+        kursor „przejeżdża" odsłaniając dane.
+        """
+        self._continuous_scroll = enabled
+        self.cursor_line.setVisible(not enabled)
+        self._refresh_visible_window()
+
+    def set_overlap_enabled(self, enabled: bool) -> None:
+        """Włącz/wyłącz nakładanie okien (1 s) w trybie stronicowania."""
+        self._overlap_enabled = enabled
+        if not self._continuous_scroll:
+            self._refresh_visible_window()
+
+    def _refresh_visible_window(self) -> None:
+        """Przerysuj bieżące okno przy aktualnej pozycji odtwarzania."""
+        if self._record is None:
+            return
+        record_start = float(self._record.time_axis[0])
+        relative_time = max(self._current_playback_time - record_start, 0.0)
+        window = self._window_seconds if self._window_seconds else 10
+        self.set_visible_time_window(relative_time, float(window))
+
     def set_visible_time_window(self, start_time: float, window_seconds: float) -> None:
         if self._record is None:
             return
 
+        record_start = float(self._record.time_axis[0])
+        record_end = float(self._record.time_axis[-1])
+
+        if self._continuous_scroll:
+            view_start, view_end, cursor = compute_scroll_window(
+                float(start_time), window_seconds, record_start, record_end
+            )
+            self._current_playback_time = cursor
+            self._cursor_pos = cursor
+            self.main_plot.setXRange(view_start, view_end, padding=0.0)
+            self.cursor_line.setPos(cursor)
+            self.cursor_line.setVisible(False)
+            # Rysujemy całe okno [view_start, view_end] (płynne przewijanie),
+            # a nie tylko do kursora — bez efektu „odsłaniania" z trybu sweep.
+            self._update_revealed_data(view_start, view_end)
+            return
+
+        # Tryb stronicowania (sweep) — domyślny.
         win_new = window_seconds if window_seconds > 0 else 10.0
         overlap = 1.0 if self._overlap_enabled else 0.0
-        record_start = float(self._record.time_axis[0])
         playback_time = max(float(start_time), 0.0)
         absolute_cursor_time = record_start + playback_time
 
@@ -360,12 +406,12 @@ class ECGPlotWidget(QWidget):
 
         page_idx = int(playback_time / win_new)
         page_start_raw = record_start + (page_idx * win_new)
-
         view_start = max(record_start, page_start_raw - overlap)
         view_end = view_start + win_new + (overlap if page_idx > 0 else 0)
 
         self.main_plot.setXRange(view_start, view_end, padding=0.0)
         self.cursor_line.setPos(absolute_cursor_time)
+        self.cursor_line.setVisible(True)
 
         self._update_revealed_data(view_start, absolute_cursor_time)
 

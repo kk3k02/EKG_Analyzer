@@ -32,6 +32,7 @@ class PlaybackControlsWidget(QWidget):
     playback_speed_changed = Signal(float)
     playback_loop_toggled = Signal(bool)
     playback_position_changed = Signal(float)
+    continuous_scroll_toggled = Signal(bool)
     overlap_toggled = Signal(bool)
 
     def __init__(self, parent=None) -> None:
@@ -48,6 +49,13 @@ class PlaybackControlsWidget(QWidget):
         self.stop_button = QPushButton(self)
         self.step_forward_button = QPushButton(self)
         self.next_annotation_button = QPushButton(self)
+        self.scroll_mode_button = QPushButton("Przewijanie", self)
+        self.scroll_mode_button.setCheckable(True)
+        self.scroll_mode_button.setToolTip(
+            "Płynne przewijanie sygnału (ciągłe, bez skoków QRS, kursor ukryty).\n"
+            "Wyłączone: tryb stronicowania z kursorem."
+        )
+        self.scroll_mode_button.toggled.connect(self.continuous_scroll_toggled.emit)
         self.play_pause_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
         self.step_backward_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaSeekBackward))
         self.stop_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaStop))
@@ -78,6 +86,8 @@ class PlaybackControlsWidget(QWidget):
         layout.addWidget(self.step_forward_button)
         layout.addSpacing(6)
         layout.addWidget(self.next_annotation_button)
+        layout.addSpacing(12)
+        layout.addWidget(self.scroll_mode_button)
 
         self.navigation_slider = QSlider(Qt.Orientation.Horizontal, self)
         self.navigation_slider.setRange(0, 1000)
@@ -189,6 +199,7 @@ class PlaybackControlsWidget(QWidget):
             self.stop_button,
             self.step_forward_button,
             self.next_annotation_button,
+            self.scroll_mode_button,
             self.navigation_slider,
             self.playback_settings_button,
         ):
