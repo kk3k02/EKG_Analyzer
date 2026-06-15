@@ -172,6 +172,49 @@ class MetadataDialog(QDialog):
         self.metadata_panel.set_record(record)
 
 
+class AuthorsDialog(QDialog):
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Autorzy")
+        self.setModal(True)
+        self.resize(400, 220)
+
+        layout = QVBoxLayout(self)
+
+        topic_label = QLabel(
+            "<b>Temat:</b> Analiza sygnału EKG w dziedzinie częstotliwości", self
+        )
+        topic_label.setWordWrap(True)
+        topic_label.setStyleSheet("font-size: 13px; padding-bottom: 8px;")
+        layout.addWidget(topic_label)
+
+        authors_label = QLabel("<b>Autorzy:</b>", self)
+        authors_label.setStyleSheet("font-size: 13px;")
+        layout.addWidget(authors_label)
+
+        for name in ("Piotr Szczypior", "Jakub Jakubowicz", "Wojciech Warwas", "Adrian Kotula"):
+            lbl = QLabel(f"• {name}", self)
+            lbl.setStyleSheet("font-size: 13px; padding-left: 12px;")
+            layout.addWidget(lbl)
+
+        supervisor_label = QLabel("<b>Prowadzący:</b>", self)
+        supervisor_label.setStyleSheet("font-size: 13px; padding-top: 8px;")
+        layout.addWidget(supervisor_label)
+
+        supervisor = QLabel("• dr inż. Jan Nikodem", self)
+        supervisor.setStyleSheet("font-size: 13px; padding-left: 12px;")
+        layout.addWidget(supervisor)
+
+        layout.addStretch()
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close, self)
+        close_button = buttons.button(QDialogButtonBox.StandardButton.Close)
+        if close_button is not None:
+            close_button.setText("Zamknij")
+            close_button.clicked.connect(self.close)
+        layout.addWidget(buttons)
+
+
 class DiseaseResultDialog(QDialog):
     def __init__(self, result: dict[str, object], parent=None) -> None:
         super().__init__(parent)

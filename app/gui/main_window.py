@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
 
 from app.gui.controls_panel import ControlsPanel
 from app.gui.dialogs import (
+    AuthorsDialog,
     DiseaseResultDialog,
     MetadataDialog,
     SamplingRateDialog,
@@ -115,6 +116,7 @@ class MainWindow(QMainWindow):
 
         self.controls = ControlsPanel(self)
         self.metadata_dialog = MetadataDialog(self)
+        self.authors_dialog = AuthorsDialog(self)
 
         self.sidebar_stack = QStackedWidget(self)
 
@@ -179,9 +181,17 @@ class MainWindow(QMainWindow):
         self.info_button = QPushButton("Informacje", self)
         self.info_button.setEnabled(False)
         self.info_button.clicked.connect(self._open_metadata_dialog)
-        self.content_tabs.setCornerWidget(
-            self.info_button, Qt.Corner.TopRightCorner
-        )
+
+        self.authors_button = QPushButton("Autorzy", self)
+        self.authors_button.clicked.connect(self._open_authors_dialog)
+
+        corner_widget = QWidget(self)
+        corner_layout = QHBoxLayout(corner_widget)
+        corner_layout.setContentsMargins(0, 0, 4, 0)
+        corner_layout.setSpacing(4)
+        corner_layout.addWidget(self.info_button)
+        corner_layout.addWidget(self.authors_button)
+        self.content_tabs.setCornerWidget(corner_widget, Qt.Corner.TopRightCorner)
 
         central_layout.addWidget(left_scroll)
         central_layout.addWidget(self.content_tabs, stretch=1)
@@ -424,6 +434,9 @@ class MainWindow(QMainWindow):
     def _open_metadata_dialog(self) -> None:
         self.metadata_dialog.set_record(self.current_record)
         self.metadata_dialog.exec()
+
+    def _open_authors_dialog(self) -> None:
+        self.authors_dialog.exec()
 
     def _show_wait_popup(self) -> None:
         self._wait_popup_depth += 1
